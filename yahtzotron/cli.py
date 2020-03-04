@@ -28,11 +28,12 @@ def cli(ctx):
 @click.option('-o', '--out', type=click.Path(file_okay=False, writable=True), required=True)
 @click.option('--ruleset', type=click.Choice(list(AVAILABLE_RULESETS.keys())), default='yatzy')
 @click.option('-n', '--num-epochs', type=click.IntRange(min=0), default=100)
-def train(out, ruleset, num_epochs):
+@click.option('-l', '--loglevel', type=click.Choice(['debug', 'info', 'warning']), default='warning')
+def train(out, ruleset, num_epochs, loglevel):
     from .model import Yahtzotron
 
     logger.remove()
-    logger.add(sys.stderr, level="WARNING")
+    logger.add(sys.stderr, level=loglevel.upper())
 
     rules = AVAILABLE_RULESETS[ruleset]
     yzt = Yahtzotron(ruleset=rules)
