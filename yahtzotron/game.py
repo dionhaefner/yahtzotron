@@ -1,21 +1,7 @@
 import random
 
 import numpy as np
-
-
-def get_roll(kept_dice=None, num_dice=5):
-    if kept_dice is not None:
-        result = kept_dice.copy()
-        num_rolls = num_dice - len(kept_dice)
-    else:
-        result = []
-        num_rolls = num_dice
-
-    for _ in range(num_rolls):
-        rolled = random.randint(1, 6)
-        result.append(rolled)
-
-    return np.array(sorted(result))
+import jax.numpy as jnp
 
 
 class Scorecard:
@@ -39,6 +25,7 @@ class Scorecard:
         return new_card
 
     def register_score(self, roll, cat_index):
+        roll = np.array(roll)
         score = self.ruleset_.score(roll, cat_index, self.filled)
         self.scores[cat_index] = score
         self.filled[cat_index] = 1
@@ -49,6 +36,9 @@ class Scorecard:
 
     def total_score(self):
         return self.ruleset_.total_score(self.scores)
+
+    def to_array(self):
+        return np.concatenate([self.filled, self.score_summary()])
 
     def __repr__(self):
         score_str = ', '.join(

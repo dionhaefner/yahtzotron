@@ -28,15 +28,21 @@ def cli(ctx):
 @click.option('-o', '--out', type=click.Path(file_okay=False, writable=True), required=True)
 @click.option('--ruleset', type=click.Choice(list(AVAILABLE_RULESETS.keys())), default='yatzy')
 @click.option('-n', '--num-epochs', type=click.IntRange(min=0), default=100)
-def train(out, ruleset, num_epochs):
+@click.option('--trainer', type=click.Choice(['genetic']), default='genetic')
+@click.option('-v', '--loglevel', type=click.Choice(['debug', 'info', 'warning', 'error']), default='warning')
+def train(out, ruleset, num_epochs, trainer, loglevel):
     from .model import Yahtzotron
 
     logger.remove()
-    logger.add(sys.stderr, level="WARNING")
+    logger.add(sys.stderr, level=loglevel.upper())
 
     rules = AVAILABLE_RULESETS[ruleset]
     yzt = Yahtzotron(ruleset=rules)
-    yzt.train(num_epochs)
+
+    if trainer == 'genetic':
+        from .trainers.genetic import train_genetic
+        train_genetic(yzt, num_epochs=num_epochs)
+
     yzt.save(out)
 
 
