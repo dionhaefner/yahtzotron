@@ -1,13 +1,10 @@
-import random
-
 import numpy as np
-import jax.numpy as jnp
 
 
 class Scorecard:
     def __init__(self, ruleset, scores=None):
-        self.scores = np.zeros(ruleset.num_categories, dtype='int')
-        self.filled = np.zeros(ruleset.num_categories, dtype='bool')
+        self.scores = np.zeros(ruleset.num_categories, dtype="int")
+        self.filled = np.zeros(ruleset.num_categories, dtype="bool")
 
         if scores is not None:
             assert len(scores) == ruleset.num_categories
@@ -41,7 +38,10 @@ class Scorecard:
         return np.concatenate([self.filled, self.score_summary()])
 
     def __repr__(self):
-        score_str = ', '.join(
-            str(score) if filled else 'None' for score, filled in zip(self.scores, self.filled)
+        score_str = ", ".join(
+            str(score) if filled else "None"
+            for score, filled in zip(self.scores, self.filled)
         )
-        return f'{self.__class__.__name__}(ruleset={self.ruleset_}, scores=[{score_str}])'
+        return (
+            f"{self.__class__.__name__}(ruleset={self.ruleset_}, scores=[{score_str}])"
+        )

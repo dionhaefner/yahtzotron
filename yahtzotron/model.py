@@ -1,15 +1,14 @@
 import os
-from copy import deepcopy
+import pickle
 
 import numpy as np
-from loguru import logger
 
 import jax
 import jax.numpy as jnp
 import haiku as hk
 
-from .game import Scorecard
 from .play import turn_fast
+from .rulesets import AVAILABLE_RULESETS
 
 key = hk.PRNGSequence(17)
 
@@ -27,15 +26,18 @@ def create_roll_net(num_dice, num_categories):
     ]
 
     def model(x):
-        m = hk.Sequential([
-            hk.Linear(12), 
-            jax.nn.relu,
-            hk.Linear(24),
-            jax.nn.relu,
-            hk.Linear(12),
-            jax.nn.relu,
-            hk.Linear(action_space)
-        ])
+        m = hk.Sequential(
+            [
+                hk.Linear(12),
+                jax.nn.relu,
+                hk.Linear(24),
+                jax.nn.relu,
+                hk.Linear(12),
+                jax.nn.relu,
+                hk.Linear(action_space),
+                jax.nn.softmax,
+            ]
+        )
         return m(x)
 
     forward = hk.without_apply_rng(hk.transform(model))
@@ -55,16 +57,18 @@ def create_strategy_net(num_dice, num_categories):
     ]
 
     def model(x):
-        m = hk.Sequential([
-            hk.Linear(12), 
-            jax.nn.relu,
-            hk.Linear(24),
-            jax.nn.relu,
-            hk.Linear(12),
-            jax.nn.relu,
-            hk.Linear(num_categories),
-            jax.nn.softmax,
-        ])
+        m = hk.Sequential(
+            [
+                hk.Linear(12),
+                jax.nn.relu,
+                hk.Linear(24),
+                jax.nn.relu,
+                hk.Linear(12),
+                jax.nn.relu,
+                hk.Linear(num_categories),
+                jax.nn.softmax,
+            ]
+        )
         return m(x)
 
     forward = hk.without_apply_rng(hk.transform(model))
@@ -83,16 +87,18 @@ def create_value_net(num_categories):
     ]
 
     def model(x):
-        m = hk.Sequential([
-            hk.Linear(12), 
-            jax.nn.relu,
-            hk.Linear(24),
-            jax.nn.relu,
-            hk.Linear(12),
-            jax.nn.relu,
-            hk.Linear(1),
-            jax.nn.sigmoid,
-        ])
+        m = hk.Sequential(
+            [
+                hk.Linear(12),
+                jax.nn.relu,
+                hk.Linear(24),
+                jax.nn.relu,
+                hk.Linear(12),
+                jax.nn.relu,
+                hk.Linear(1),
+                jax.nn.sigmoid,
+            ]
+        )
         return m(x)
 
     forward = hk.without_apply_rng(hk.transform(model))
@@ -101,11 +107,14 @@ def create_value_net(num_categories):
 
 
 class Yahtzotron:
-    def __init__(self, ruleset, load_path=None, objective='win'):
-        self._ruleset = ruleset
+    def __init__(self, ruleset, load_path=None, objective="win"):
+        self._ruleset = AVAILABLE_RULESETS[ruleset]
 
         if load_path is None:
-            num_dice, num_categories = ruleset.num_dice, ruleset.num_categories
+            num_dice, num_categories = (
+                self._ruleset.num_dice,
+                self._ruleset.num_categories,
+            )
             nets_and_weights = dict(
                 roll_1=create_roll_net(num_dice, num_categories),
                 strategy_1=create_strategy_net(num_dice, num_categories),
@@ -118,10 +127,10 @@ class Yahtzotron:
         else:
             self._nets, self._weights = self.load(load_path)
 
-        possible_objectives = ('win', 'avg_score')
+        possible_objectives = ("win", "avg_score")
         if objective not in possible_objectives:
             raise ValueError(
-                f'Got unexpected objective {objective}, must be one of {possible_objectives}'
+                f"Got unexpected objective {objective}, must be one of {possible_objectives}"
             )
 
         self._objective = objective
@@ -129,11 +138,15 @@ class Yahtzotron:
 
     def turn(self, player_scorecard, opponent_scorecards, return_all_actions=False):
         return turn_fast(
-            player_scorecard, opponent_scorecards, 
-            objective=self._objective, nets=self._nets, weights=self._weights, 
-            num_dice=self._ruleset.num_dice, num_categories=self._ruleset.num_categories,
+            player_scorecard,
+            opponent_scorecards,
+            objective=self._objective,
+            nets=self._nets,
+            weights=self._weights,
+            num_dice=self._ruleset.num_dice,
+            num_categories=self._ruleset.num_categories,
         )
-        
+
     def pre_train(self, num_samples=100_000):
         """Pre-train value network to go for maximum scores"""
         return
@@ -181,29 +194,32 @@ class Yahtzotron:
         self._weights = hk.data_structures.to_immutable_dict(new_weights)
 
     def clone(self, keep_weights=True):
-        yzt = self.__class__(
-            ruleset=self._ruleset,
-            objective=self._objective
-        )
+        yzt = self.__class__(ruleset=self._ruleset.name, objective=self._objective)
 
         if keep_weights:
             yzt.set_weights(self.get_weights())
 
         return yzt
 
-
     def save(self, path):
         os.makedirs(path, exist_ok=True)
-        for name, obj in self._nets.items():
-            obj.save(os.path.join(path, f'{name}_net.h5'))
+
+        statedict = dict(
+            objective=self._objective,
+            ruleset=self._ruleset.name,
+            weights=self._weights,
+        )
+
+        with open(os.path.join(path, "yzt.pkl"), "wb") as f:
+            pickle.dump(statedict, f)
 
     def load(self, path):
         nets = {
-            name: load_model(os.path.join(path, f'{name}_net.h5'))
-            for name in ('roll_1', 'roll_2', 'value', 'strategy_1', 'strategy_2')
+            name: load_model(os.path.join(path, f"{name}_net.h5"))
+            for name in ("roll_1", "roll_2", "value", "strategy_1", "strategy_2")
         }
         self._reinit_model = False
         return nets
 
     def __repr__(self):
-        return f'{self.__class__.__name__}(ruleset={self._ruleset}, objective={self._objective})'
+        return f"{self.__class__.__name__}(ruleset={self._ruleset}, objective={self._objective})"

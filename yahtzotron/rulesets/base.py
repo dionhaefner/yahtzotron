@@ -1,7 +1,7 @@
 from collections import namedtuple
 
 
-Category = namedtuple('category', ['name', 'score', 'counts_towards_bonus'])
+Category = namedtuple("category", ["name", "score", "counts_towards_bonus"])
 
 
 def make_category(*args, name=None, counts_towards_bonus=False):
@@ -9,11 +9,7 @@ def make_category(*args, name=None, counts_towards_bonus=False):
         nonlocal name
         if name is None:
             name = func.__name__
-        return Category(
-            name,
-            func,
-            counts_towards_bonus
-        )
+        return Category(name, func, counts_towards_bonus)
 
     if args and callable(args[0]):
         return inner(args[0])
@@ -22,8 +18,14 @@ def make_category(*args, name=None, counts_towards_bonus=False):
 
 
 class Ruleset:
-    def __init__(self, categories, num_dice=5, bonus_cutoff=63, bonus_score=50,
-                 ruleset_name='custom'):
+    def __init__(
+        self,
+        categories,
+        num_dice=5,
+        bonus_cutoff=63,
+        bonus_score=50,
+        ruleset_name="custom",
+    ):
         self.name = ruleset_name
         self.num_dice = num_dice
         self.num_rounds = len(categories)
@@ -35,7 +37,7 @@ class Ruleset:
 
     def score(self, roll, cat_idx, filled_categories):
         if filled_categories[cat_idx]:
-            raise ValueError('Cannot score already filled category')
+            raise ValueError("Cannot score already filled category")
         return self.categories[cat_idx].score(roll, filled_categories)
 
     def total_score(self, scores):
@@ -62,4 +64,4 @@ class Ruleset:
         return 0
 
     def __repr__(self):
-        return f'{self.__class__.__name__}(ruleset_name={self.name})'
+        return f"{self.__class__.__name__}(ruleset_name={self.name})"

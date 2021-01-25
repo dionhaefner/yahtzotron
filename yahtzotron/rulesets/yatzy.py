@@ -108,10 +108,7 @@ def large_straight(roll, filled_categories):
 
 @make_category
 def chance(roll, filled_categories):
-    return sum(
-        die_value * num_dice
-        for die_value, num_dice in enumerate(roll, 1)
-    )
+    return sum(die_value * num_dice for die_value, num_dice in enumerate(roll, 1))
 
 
 @make_category
@@ -123,16 +120,25 @@ def yahtzee(roll, filled_categories):
 
 
 yatzy_rules = Ruleset(
-    ruleset_name='yatzy',
+    ruleset_name="yatzy",
     num_dice=5,
     categories=(
-        ones, twos, threes, fours, fives, sixes,
-        one_pair, two_pairs,
-        three_of_a_kind, four_of_a_kind,
+        ones,
+        twos,
+        threes,
+        fours,
+        fives,
+        sixes,
+        one_pair,
+        two_pairs,
+        three_of_a_kind,
+        four_of_a_kind,
         full_house,
-        small_straight, large_straight,
-        chance, yahtzee
+        small_straight,
+        large_straight,
+        chance,
+        yahtzee,
     ),
     bonus_cutoff=63,
-    bonus_score=50
+    bonus_score=50,
 )
