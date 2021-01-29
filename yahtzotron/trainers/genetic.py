@@ -27,7 +27,7 @@ def compute_fitness(scores, objective, tau=0.1):
 
         fitness_per_game = (
             1 / rank_per_player ** 2
-        )  # [np.exp(-1 / tau * rank / np.sqrt(league_size)) for rank in rank_per_player]
+        )
         return np.mean(fitness_per_game, axis=1)
 
     if objective == "avg_score":
@@ -52,8 +52,8 @@ def mutate(league, eps, mutate_prob=0.01):
 
 def procreate_asexual(league, fitness, eps):
     league_size = len(league)
-    num_veterans = max(int(0.1 * league_size), 1)
-    num_new_players = max(int(0.1 * league_size), 1)
+    num_veterans = max(int(0.2 * league_size), 1)
+    num_new_players = 0 #max(int(0.1 * league_size), 1)
     num_offspring = league_size - num_new_players - num_veterans
 
     offspring_idx = random.choices(range(league_size), weights=fitness, k=num_offspring)
@@ -122,29 +122,36 @@ def plot_state(pipe):
 
     i = 1
 
-    while True:
-        if p_output.poll(0.01):
-            msg = p_output.recv()
-            if msg is None:
-                break
+    try:
+        while True:
+            if p_output.poll(0.01):
+                msg = p_output.recv()
+                if msg is None:
+                    break
 
-            plt.boxplot(msg.flatten(), positions=[i])
-            plt.xlim(max(0, i - 40), i + 1)
-            plt.ylim(0, 300)
-            i += 1
+                plt.boxplot(msg.flatten(), positions=[i])
+                plt.xlim(max(0, i - 40), i + 1)
+                plt.ylim(0, 300)
+                i += 1
 
-        fig.canvas.draw_idle()
-        fig.canvas.start_event_loop(0.1)
+            fig.canvas.draw_idle()
+            fig.canvas.start_event_loop(0.1)
+    except KeyboardInterrupt:
+        pass
 
-    fig.close()
+    plt.close(fig)
 
 
-def train_genetic(model, num_epochs, league_size=24, eps=0.1, games_per_epoch=10):
+def train_genetic(model, num_epochs, league_size=10, eps=0.1, games_per_epoch=10, restart=False):
     """Train model through self-play"""
     ruleset = model._ruleset
     objective = model._objective
 
-    league = [model.clone(keep_weights=False) for _ in range(league_size)]
+    if restart:
+        league = [model.clone() for _ in range(league_size)]
+        mutate(league[1:], eps)
+    else:
+        league = [model.clone(keep_weights=False) for _ in range(league_size)]
 
     p_output, p_input = multiprocessing.Pipe()
     plot_p = multiprocessing.Process(target=plot_state, args=((p_output, p_input),))
@@ -159,7 +166,7 @@ def train_genetic(model, num_epochs, league_size=24, eps=0.1, games_per_epoch=10
                 for _ in range(games_per_epoch)
             ]
 
-            # randomize turn order every time
+            # randomize turn order every epoch
             turn_order = list(range(league_size))
             random.shuffle(turn_order)
 

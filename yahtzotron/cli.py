@@ -4,13 +4,14 @@ cli.py
 Entry point for CLI.
 """
 
+import os
 import sys
 
 import click
 from loguru import logger
 
-from . import __version__
-from .rulesets import AVAILABLE_RULESETS
+from yahtzotron import __version__
+from yahtzotron.rulesets import AVAILABLE_RULESETS
 
 
 @click.group("yahtzotron", invoke_without_command=True)
@@ -33,24 +34,29 @@ def cli(ctx):
 )
 @click.option("-n", "--num-epochs", type=click.IntRange(min=0), default=100)
 @click.option("--trainer", type=click.Choice(["genetic"]), default="genetic")
+@click.option("--no-restore", is_flag=True)
 @click.option(
     "-v",
     "--loglevel",
     type=click.Choice(["debug", "info", "warning", "error"]),
     default="warning",
 )
-def train(out, ruleset, num_epochs, trainer, loglevel):
-    from .model import Yahtzotron
+def train(out, ruleset, num_epochs, trainer, loglevel, no_restore):
+    from yahtzotron.model import Yahtzotron
 
     logger.remove()
     logger.add(sys.stderr, level=loglevel.upper())
 
-    yzt = Yahtzotron(ruleset=ruleset, objective="win")
+    load_path = None
+    if os.path.exists(out) and not no_restore:
+        load_path = out
+
+    yzt = Yahtzotron(ruleset=ruleset, objective="win", load_path=load_path)
 
     if trainer == "genetic":
-        from .trainers.genetic import train_genetic
+        from yahtzotron.trainers.genetic import train_genetic
 
-        train_genetic(yzt, num_epochs=num_epochs)
+        train_genetic(yzt, num_epochs=num_epochs, restart=load_path is not None)
 
     yzt.save(out)
 
@@ -63,3 +69,7 @@ def play():
 @cli.command("evaluate")
 def evaluate():
     pass
+
+
+if __name__ == '__main__':
+    cli()

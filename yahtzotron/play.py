@@ -1,27 +1,37 @@
 from functools import partial
 
-from loguru import logger
 import numpy as np
+from loguru import logger
 
 import jax
 import jax.numpy as jnp
 import haiku as hk
 
+from .strategy import reward_idx_to_action
+
 key = hk.PRNGSequence(17)
 
 
-@partial(jax.jit, static_argnums=(1,))
-def _convert_rollnet_output(output, num_dice):
-    return jnp.unpackbits(output.astype(jnp.uint8))[-num_dice:]
-
-
 @jax.jit
-def _get_roll(current_dice, roll):
-    return jnp.sort(jnp.where(current_dice == 0, roll, current_dice))
+def _get_roll(current_dice, key):
+    roll = jax.random.randint(key, shape=current_dice.shape, minval=1, maxval=7, dtype=jnp.uint8)
+    return jnp.sort(jnp.where(current_dice == 0, roll, current_dice), axis=-1)
 
 
 def _scorecards_to_array(scorecards):
-    return jax.tree_map(lambda s: s.to_array(), scorecards)
+    return jnp.asarray(jax.tree_map(lambda s: s.to_array(), scorecards))
+
+
+@partial(jax.jit, static_argnums=(0,))
+@partial(jax.vmap, in_axes=(None, None, 0))
+def _apply_valuenet(net, weights, inputs):
+    return net.apply(weights, inputs)[:, 0]
+
+
+@partial(jax.jit, static_argnums=(1,))
+@partial(jax.vmap, in_axes=(0, None))
+def _vector_bincount(x, length):
+    return jnp.bincount(x, length=length)
 
 
 def turn_fast(
@@ -32,179 +42,89 @@ def turn_fast(
     weights,
     num_dice,
     num_categories,
+    roll_lut,
     return_all_actions=False,
 ):
-    player_scorecard_jax = jnp.asarray(_scorecards_to_array(player_scorecard))
+    player_scorecard_jax = _scorecards_to_array(player_scorecard)
 
-    if player_scorecard_jax.ndim == 1:
-        player_scorecard_jax = jnp.expand_dims(player_scorecard_jax, 0)
+    # if player_scorecard_jax.ndim == 1:
+    #     player_scorecard_jax = jnp.expand_dims(player_scorecard_jax, 0)
 
-    if objective == "win":
-        opponent_scorecard_jax = jnp.asarray(_scorecards_to_array(opponent_scorecards))
-        if opponent_scorecard_jax.ndim == 2:
-            opponent_scorecard_jax = jnp.expand_dims(opponent_scorecard_jax, 0)
+    # if objective == "win":
+    #     opponent_scorecard_jax = _scorecards_to_array(opponent_scorecards)
+    #     if opponent_scorecard_jax.ndim == 2:
+    #         opponent_scorecard_jax = jnp.expand_dims(opponent_scorecard_jax, 0)
 
-        strongest_opponent = get_strongest_opponent(
-            player_scorecard_jax, opponent_scorecard_jax, nets, weights
+    #     strongest_opponent = get_strongest_opponent(
+    #         player_scorecard_jax, opponent_scorecard_jax, nets["value"], weights["value"]
+    #     )
+    # elif objective == "avg_score":
+    #     # beating someone with equal score means maximizing expected final score
+    strongest_opponent = player_scorecard_jax
+
+    num_games = player_scorecard_jax.shape[0]
+    current_dice = jnp.zeros((num_games, num_dice), dtype=jnp.uint8)
+    dice_to_keep = jnp.ones_like(current_dice)
+    key.reserve(num_games * 6)
+
+    for roll_number in range(3):
+        current_dice = _get_roll(current_dice * dice_to_keep, next(key))
+
+        random_keys = jnp.asarray([next(key) for _ in range(num_games)])
+        category_idx = get_category_action(
+            roll_number,
+            current_dice,
+            player_scorecard_jax,
+            strongest_opponent,
+            random_keys,
+            nets['strategy'],
+            weights['strategy'],
+            num_dice,
         )
-    elif objective == "avg_score":
-        # beating someone with equal score means maximizing expected final score
-        strongest_opponent = player_scorecard_jax
 
-    rolls = jnp.array(
-        np.random.randint(1, 7, (player_scorecard_jax.shape[0], 3, num_dice))
-    )
+        if roll_number != 2:
+            keep_actions = [np.argmax(roll_lut[(tuple(r), cat_idx)]) for r, cat_idx in zip(current_dice, category_idx)]
+            dice_to_keep = jnp.asarray([reward_idx_to_action(a, num_dice) for a in keep_actions])
 
-    final_roll = get_final_dice(
-        player_scorecard_jax,
-        strongest_opponent,
-        rolls,
-        objective,
-        nets,
-        weights,
-        num_dice,
-        return_all_actions,
-    )
+    logger.info("Picked category {}", category_idx)
 
-    dice_count = jax.vmap(partial(jnp.bincount, length=7))(final_roll)[:, 1:]
-
-    possible_scorecards = []
-    for cat_idx in range(num_categories):
-        possible_scorecards_p = []
-        for c, p in zip(dice_count, player_scorecard):
-            new_scorecard = p.copy()
-            try:
-                new_scorecard.register_score(c, cat_idx)
-            except ValueError:
-                # score is already registered
-                # TODO: handle this better
-                pass
-
-            possible_scorecards_p.append(new_scorecard.to_array())
-
-        possible_scorecards.append(possible_scorecards_p)
-
-    possible_scorecards = jnp.array(possible_scorecards)
-
-    valuenet_in = jnp.concatenate(
-        [
-            possible_scorecards,
-            jnp.tile(strongest_opponent, (possible_scorecards.shape[0], 1, 1)),
-        ],
-        axis=2,
-    )
-    possible_strength = jax.vmap(nets["value"].apply, in_axes=(None, 0))(
-        weights["value"], valuenet_in
-    )[:, :, 0]
-    possible_strength = jnp.where(
-        player_scorecard_jax[:, :-2].T == 1, -1, possible_strength
-    )
-    best_category = jnp.argmax(possible_strength, axis=0)
-
-    logger.info("Picked category {}", best_category)
-
-    if return_all_actions:
-        return dice_count, best_category, recorded_actions
-
-    return dice_count, best_category
+    dice_count = _vector_bincount(current_dice, 7)[:, 1:]
+    return dice_count, category_idx
 
 
+@partial(jax.jit, static_argnums=(2,))
 @partial(jax.vmap, in_axes=(0, 0, None, None))
-def get_strongest_opponent(player_scorecard, opponent_scorecards, nets, weights):
+def get_strongest_opponent(player_scorecard, opponent_scorecards, net, weights):
     num_opponents = opponent_scorecards.shape[0]
     valuenet_in = jnp.concatenate(
         [opponent_scorecards, jnp.tile(player_scorecard, (num_opponents, 1))], axis=1
     )
-    opponent_strength = nets["value"].apply(weights["value"], valuenet_in)
+    opponent_strength = net.apply(weights, valuenet_in)
     logger.debug("Opponent strengths: {}", opponent_strength)
     strongest_opponent_idx = jnp.argmax(opponent_strength)
     return opponent_scorecards[strongest_opponent_idx]
 
 
-@partial(jax.vmap, in_axes=(0, 0, 0, None, None, None, None, None))
-def get_final_dice(
+@partial(jax.jit, static_argnums=(5, 7))
+@partial(jax.vmap, in_axes=(None, 0, 0, 0, 0, None, None, None))
+def get_category_action(
+    roll_number,
+    current_dice,
     player_scorecard,
     strongest_opponent,
-    rolls,
-    objective,
-    nets,
+    random_key,
+    net,
     weights,
     num_dice,
-    return_all_actions,
 ):
-    """Play a turn"""
-    if return_all_actions:
-        recorded_actions = {}
+    dice_count = jnp.bincount(current_dice, length=7)[1:]
 
-    # - first roll -
-    current_dice = jnp.zeros(num_dice, dtype=jnp.uint8)
-    roll = _get_roll(current_dice, rolls[0])
-    logger.info("Roll 1: {}", roll)
+    strategynet_in = jnp.concatenate([jnp.array([roll_number]), dice_count, player_scorecard, strongest_opponent])
+    strategynet_out = net.apply(weights, strategynet_in)
+    strategynet_out = jnp.where(player_scorecard[:-2].T == 1, 0, 1e-8 + strategynet_out)
 
-    rollnet_in = jnp.concatenate([roll, player_scorecard, strongest_opponent])
-    rollnet_out = nets["roll_1"].apply(weights["roll_1"], rollnet_in)
-
-    action = jax.random.choice(next(key), len(rollnet_out), p=rollnet_out)
-    dice_to_keep = _convert_rollnet_output(action, num_dice)
-
-    if return_all_actions:
-        recorded_actions["roll_1"] = (rollnet_in, rollnet_out, action)
-
-    current_dice = roll * dice_to_keep
-
-    # strategynet_in = jnp.concatenate([
-    #     jnp.bincount(current_dice, length=7)[1:],
-    #     player_scorecard, strongest_opponent
-    # ])
-    # strategynet_out = nets['strategy_1'].apply(weights['strategy_1'], strategynet_in)
-
-    # if return_all_actions:
-    #     recorded_actions['strategy_1'] = (strategynet_in, strategynet_out)
-
-    # top_3_strategies = jnp.argsort(strategynet_out)[-1:-4:-1]
-    # top_3_strategy_names = [categories[i].name for i in top_3_strategies]
-
-    logger.info("Keeping {}", current_dice)
-    # logger.info(' going for {}', top_3_strategies)
-
-    # - second roll -
-    roll = _get_roll(current_dice, rolls[1])
-    logger.info("Roll 2: {}", roll)
-
-    rollnet_in = jnp.concatenate([roll, player_scorecard, strongest_opponent])
-    rollnet_out = nets["roll_2"].apply(weights["roll_2"], rollnet_in)
-
-    action = jax.random.choice(next(key), len(rollnet_out), p=rollnet_out)
-    dice_to_keep = _convert_rollnet_output(action, num_dice)
-
-    if return_all_actions:
-        recorded_actions["roll_2"] = (rollnet_in, rollnet_out, action)
-
-    current_dice = roll * dice_to_keep
-
-    # strategynet_in = jnp.concatenate([
-    #     jnp.bincount(current_dice, length=7)[1:],
-    #     player_scorecard, strongest_opponent
-    # ])
-    # strategynet_out = nets['strategy_2'].apply(weights['strategy_2'], strategynet_in)
-
-    # if return_all_actions:
-    #     recorded_actions['strategy_2'] = (strategynet_in,)
-
-    # top_3_strategies = jnp.argsort(strategynet_out)[-1:-4:-1]
-    # top_3_strategy_names = [categories[i].name for i in top_3_strategies]
-
-    logger.info("Keeping {}", current_dice)
-    # logger.info(' going for {}', top_3_strategies)
-
-    # - third roll -
-    roll = _get_roll(current_dice, rolls[2])
-    logger.info("Roll 3: {}", roll)
-
-    if return_all_actions:
-        return roll, recorded_actions
-
-    return roll
+    category_action = jax.random.choice(random_key, len(strategynet_out), p=strategynet_out)
+    return category_action
 
 
 def print_score(scorecard):

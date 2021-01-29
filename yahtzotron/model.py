@@ -1,5 +1,6 @@
 import os
 import pickle
+import functools
 
 import numpy as np
 
@@ -9,47 +10,21 @@ import haiku as hk
 
 from .play import turn_fast
 from .rulesets import AVAILABLE_RULESETS
+from .strategy import assemble_roll_lut
 
 key = hk.PRNGSequence(17)
+memoize = functools.lru_cache(maxsize=None)
+
+DISK_CACHE = os.path.expanduser(os.path.join('~', '.yahtzotron'))
 
 
-def create_roll_net(num_dice, num_categories):
-    """Predicts expected reward for every keep action"""
-    action_space = 2 ** num_dice
-
-    input_shapes = [
-        num_dice,  # dice values
-        num_categories,  # player scorecard
-        2,  # player scores
-        num_categories,  # opponent scorecard
-        2,  # opponent scores
-    ]
-
-    def model(x):
-        m = hk.Sequential(
-            [
-                hk.Linear(12),
-                jax.nn.relu,
-                hk.Linear(24),
-                jax.nn.relu,
-                hk.Linear(12),
-                jax.nn.relu,
-                hk.Linear(action_space),
-                jax.nn.softmax,
-            ]
-        )
-        return m(x)
-
-    forward = hk.without_apply_rng(hk.transform(model))
-    params = forward.init(next(key), jnp.ones([1, np.sum(input_shapes)]))
-    return forward, params
-
-
+@memoize
 def create_strategy_net(num_dice, num_categories):
     """Predicts category picked after turn"""
 
     input_shapes = [
-        6,  # number of each die value
+        1,  # current roll number
+        6,  # count of each die value
         num_categories,  # player scorecard
         2,  # player scores
         num_categories,  # opponent scorecard
@@ -72,10 +47,10 @@ def create_strategy_net(num_dice, num_categories):
         return m(x)
 
     forward = hk.without_apply_rng(hk.transform(model))
-    params = forward.init(next(key), jnp.ones([1, np.sum(input_shapes)]))
-    return forward, params
+    return forward, input_shapes
 
 
+@memoize
 def create_value_net(num_categories):
     """Predicts probability of player 1 winning over player 2"""
 
@@ -102,30 +77,25 @@ def create_value_net(num_categories):
         return m(x)
 
     forward = hk.without_apply_rng(hk.transform(model))
-    params = forward.init(next(key), jnp.ones([1, np.sum(input_shapes)]))
-    return forward, params
+    return forward, input_shapes
 
 
 class Yahtzotron:
     def __init__(self, ruleset, load_path=None, objective="win"):
         self._ruleset = AVAILABLE_RULESETS[ruleset]
+        self._roll_lut_path = os.path.join(DISK_CACHE, f'roll_lut_{ruleset}.pkl')
 
-        if load_path is None:
-            num_dice, num_categories = (
-                self._ruleset.num_dice,
-                self._ruleset.num_categories,
-            )
-            nets_and_weights = dict(
-                roll_1=create_roll_net(num_dice, num_categories),
-                strategy_1=create_strategy_net(num_dice, num_categories),
-                roll_2=create_roll_net(num_dice, num_categories),
-                strategy_2=create_strategy_net(num_dice, num_categories),
-                value=create_value_net(num_categories),
-            )
-            self._nets = {k: v[0] for k, v in nets_and_weights.items()}
-            self._weights = {k: v[1] for k, v in nets_and_weights.items()}
-        else:
-            self._nets, self._weights = self.load(load_path)
+        num_dice, num_categories = (
+            self._ruleset.num_dice,
+            self._ruleset.num_categories,
+        )
+        nets_and_shapes = dict(
+            # roll=create_roll_net(num_dice, num_categories),
+            strategy=create_strategy_net(num_dice, num_categories),
+            value=create_value_net(num_categories),
+        )
+        self._nets = {k: v[0] for k, v in nets_and_shapes.items()}
+        self._weights = {k: v[0].init(next(key), jnp.ones([1, np.sum(v[1])])) for k, v in nets_and_shapes.items()}
 
         possible_objectives = ("win", "avg_score")
         if objective not in possible_objectives:
@@ -136,7 +106,19 @@ class Yahtzotron:
         self._objective = objective
         self._reinit_model = True
 
+        if load_path is not None:
+            self.load(load_path)
+
     def turn(self, player_scorecard, opponent_scorecards, return_all_actions=False):
+        if not os.path.isfile(self._roll_lut_path):
+            os.makedirs(os.path.dirname(self._roll_lut_path), exist_ok=True)
+            roll_lut = assemble_roll_lut(self._ruleset)
+            with open(self._roll_lut_path, 'wb') as f:
+                pickle.dump(roll_lut, f)
+
+        with open(self._roll_lut_path, 'rb') as f:
+            roll_lut = pickle.load(f)
+
         return turn_fast(
             player_scorecard,
             opponent_scorecards,
@@ -145,6 +127,7 @@ class Yahtzotron:
             weights=self._weights,
             num_dice=self._ruleset.num_dice,
             num_categories=self._ruleset.num_categories,
+            roll_lut=roll_lut,
         )
 
     def pre_train(self, num_samples=100_000):
@@ -214,12 +197,12 @@ class Yahtzotron:
             pickle.dump(statedict, f)
 
     def load(self, path):
-        nets = {
-            name: load_model(os.path.join(path, f"{name}_net.h5"))
-            for name in ("roll_1", "roll_2", "value", "strategy_1", "strategy_2")
-        }
-        self._reinit_model = False
-        return nets
+        with open(os.path.join(path, "yzt.pkl"), "rb") as f:
+            statedict = pickle.load(f)
+
+        self._objective = statedict['objective']
+        self._ruleset = AVAILABLE_RULESETS[statedict['ruleset']]
+        self._weights = statedict['weights']
 
     def __repr__(self):
         return f"{self.__class__.__name__}(ruleset={self._ruleset}, objective={self._objective})"
