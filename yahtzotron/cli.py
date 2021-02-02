@@ -33,7 +33,6 @@ def cli(ctx):
     "--ruleset", type=click.Choice(list(AVAILABLE_RULESETS.keys())), default="yatzy"
 )
 @click.option("-n", "--num-epochs", type=click.IntRange(min=0), default=100)
-@click.option("--trainer", type=click.Choice(["genetic", "a2c"]), default="a2c")
 @click.option("--no-restore", is_flag=True)
 @click.option(
     "-v",
@@ -41,8 +40,10 @@ def cli(ctx):
     type=click.Choice(["debug", "info", "warning", "error"]),
     default="warning",
 )
-def train(out, ruleset, num_epochs, trainer, loglevel, no_restore):
-    from yahtzotron.model import Yahtzotron
+@click.option("--objective", type=click.Choice(["win", "avg_score"]), default="win")
+def train(out, ruleset, num_epochs, loglevel, no_restore, objective):
+    from yahtzotron.agent import Yahtzotron
+    from yahtzotron.training import train_a2c
 
     logger.remove()
     logger.add(sys.stderr, level=loglevel.upper())
@@ -51,19 +52,12 @@ def train(out, ruleset, num_epochs, trainer, loglevel, no_restore):
     if os.path.exists(out) and not no_restore:
         load_path = out
 
-    yzt = Yahtzotron(ruleset=ruleset, objective="win", load_path=load_path)
+    yzt = Yahtzotron(ruleset=ruleset, objective=objective, load_path=load_path)
 
-    if trainer == "genetic":
-        from yahtzotron.trainers.genetic import train_genetic
+    if load_path is None:
+        yzt = train_a2c(yzt, num_epochs=10000, pretrain=True)
 
-        yzt = train_genetic(yzt, num_epochs=num_epochs, restart=load_path is not None)
-    elif trainer == "a2c":
-        from yahtzotron.trainers.a2c import train_a2c
-
-        if load_path is None:
-            yzt = train_a2c(yzt, num_epochs=10000, pretrain=True)
-
-        yzt = train_a2c(yzt, num_epochs=num_epochs)
+    yzt = train_a2c(yzt, num_epochs=num_epochs, checkpoint_path=out)
 
     yzt.save(out)
 

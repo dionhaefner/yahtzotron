@@ -1,4 +1,3 @@
-from functools import partial
 from collections import deque
 
 import tqdm
@@ -13,7 +12,8 @@ import rlax
 from yahtzotron.game import Scorecard
 from yahtzotron.play import print_score
 
-WINNING_REWARD = 1
+REWARD_NORM = 100
+WINNING_REWARD = 100
 
 
 def entropy_loss_fn(logits_t, w_t):
@@ -42,81 +42,56 @@ def clip_grads(grad_tree, max_norm):
     return jax.tree_util.tree_map(normalize, grad_tree)
 
 
-@partial(jax.jit, static_argnums=(0,))
-def a2c_loss(network, weights, observations, actions, rewards):
-    """Actor-critic loss."""
-    td_lambda = 0.9
-    discount = 0.99
-    entropy_cost = 0.01
-
-    logits, values = network(weights, observations)
-    values = jnp.append(values, jnp.sum(rewards))
-
-    td_errors = rlax.td_lambda(
-        v_tm1=values[:-1],
-        r_t=rewards,
-        discount_t=jnp.full_like(rewards, discount),
-        v_t=values[1:],
-        lambda_=jnp.array(td_lambda),
-    )
-    critic_loss = jnp.mean(td_errors ** 2)
-
-    actor_loss = rlax.policy_gradient_loss(
-        logits_t=logits,
-        a_t=actions,
-        adv_t=td_errors,
-        w_t=jnp.ones(td_errors.shape[0]),
-    )
-
-    entropy_loss = jnp.mean(entropy_loss_fn(logits, jnp.ones(logits.shape[0])))
-    return actor_loss, critic_loss, entropy_cost * entropy_loss
-
-
-@partial(jax.jit, static_argnums=(0,))
-def supervised_loss(network, weights, observations, actions, rewards):
-    td_lambda = 0.9
-    discount = 0.99
-    entropy_cost = 0.0
-
-    logits, values = network(weights, observations)
-    values = jnp.append(values, jnp.sum(rewards))
-
-    td_errors = rlax.td_lambda(
-        v_tm1=values[:-1],
-        r_t=rewards,
-        discount_t=jnp.full_like(rewards, discount),
-        v_t=values[1:],
-        lambda_=jnp.array(td_lambda),
-    )
-    critic_loss = jnp.mean(td_errors ** 2)
-
-    # use cross-entropy loss for actor
-    mask = jnp.isfinite(logits)
-    logprob = jax.nn.log_softmax(jnp.where(mask, logits, -1e5))
-    labels = jax.nn.one_hot(actions, logits.shape[-1])
-    actor_loss = -jnp.sum(labels * mask * logprob) / labels.shape[0]
-
-    entropy_loss = jnp.mean(entropy_loss_fn(logits, jnp.ones(logits.shape[0])))
-    return actor_loss, critic_loss, entropy_cost * entropy_loss
-
-
-@partial(jax.jit, static_argnums=(0, 1, 3))
-def sgd_step(
-    loss, network, weights, optimizer, opt_state, observations, actions, rewards
+def compile_loss_function(
+    typ, network, td_lambda=0.9, discount=0.99, entropy_cost=0.01
 ):
-    """Does a step of SGD over a trajectory."""
-    max_gradient_norm = 0.5
-    total_loss = lambda *args: sum(loss(*args))
-    gradients = jax.grad(total_loss, 1)(
-        network, weights, observations, actions, rewards
-    )
-    gradients = clip_grads(gradients, max_gradient_norm)
-    updates, opt_state = optimizer.update(gradients, opt_state)
-    weights = optax.apply_updates(weights, updates)
-    return weights, opt_state
+    def loss(weights, observations, actions, rewards):
+        """Actor-critic loss."""
+        logits, values = network(weights, observations)
+        values = jnp.append(values, jnp.sum(rewards))
+
+        td_errors = rlax.td_lambda(
+            v_tm1=values[:-1],
+            r_t=rewards,
+            discount_t=jnp.full_like(rewards, discount),
+            v_t=values[1:],
+            lambda_=jnp.array(td_lambda),
+        )
+        critic_loss = jnp.mean(td_errors ** 2)
+
+        if typ == "a2c":
+            actor_loss = rlax.policy_gradient_loss(
+                logits_t=logits,
+                a_t=actions,
+                adv_t=td_errors,
+                w_t=jnp.ones(td_errors.shape[0]),
+            )
+        elif typ == "supervised":
+            mask = jnp.isfinite(logits)
+            logprob = jax.nn.log_softmax(jnp.where(mask, logits, -1e5))
+            labels = jax.nn.one_hot(actions, logits.shape[-1])
+            actor_loss = -jnp.sum(labels * mask * logprob) / labels.shape[0]
+
+        entropy_loss = jnp.mean(entropy_loss_fn(logits, jnp.ones(logits.shape[0])))
+        return actor_loss, critic_loss, entropy_cost * entropy_loss
+
+    return jax.jit(loss)
 
 
-def play_game(model, players_per_game, pretrain=False):
+def compile_sgd_step(loss, network, optimizer, max_gradient_norm=0.5):
+    def sgd_step(weights, opt_state, observations, actions, rewards):
+        """Does a step of SGD over a trajectory."""
+        total_loss = lambda *args: sum(loss(*args))
+        gradients = jax.grad(total_loss)(weights, observations, actions, rewards)
+        gradients = clip_grads(gradients, max_gradient_norm)
+        updates, opt_state = optimizer.update(gradients, opt_state)
+        weights = optax.apply_updates(weights, updates)
+        return weights, opt_state
+
+    return jax.jit(sgd_step)
+
+
+def play_tournament(model, players_per_game, pretrain=False):
     ruleset = model._ruleset
     scores = [Scorecard(ruleset) for _ in range(players_per_game)]
     trajectories = [[] for _ in range(players_per_game)]
@@ -144,7 +119,12 @@ def play_game(model, players_per_game, pretrain=False):
 
 
 def train_a2c(
-    model, num_epochs, players_per_game=4, learning_rate=1e-3, pretrain=False
+    model,
+    num_epochs,
+    checkpoint_path=None,
+    players_per_game=4,
+    learning_rate=1e-3,
+    pretrain=False,
 ):
     """Train model through self-play"""
     objective = model._objective
@@ -160,9 +140,15 @@ def train_a2c(
     }
     progress = tqdm.tqdm(range(num_epochs))
 
+    loss_type = "supervised" if pretrain else "a2c"
+    loss_fn = compile_loss_function(loss_type, model._net)
+    sgd_step = compile_sgd_step(loss_fn, model._net, optimizer)
+
+    best_score = -float("inf")
+
     try:
         for i in progress:
-            scores, trajectories, player_values = play_game(
+            scores, trajectories, player_values = play_tournament(
                 model, players_per_game, pretrain
             )
 
@@ -180,7 +166,6 @@ def train_a2c(
             )
 
             weights = model._weights
-            loss_fn = supervised_loss if pretrain else a2c_loss
 
             for p in range(players_per_game):
                 observations, actions, rewards = zip(*trajectories[p])
@@ -188,16 +173,22 @@ def train_a2c(
 
                 observations = np.stack(observations, axis=0)
                 actions = np.array(actions, dtype=np.int32)
-                rewards = np.array(rewards, dtype=np.float32) / 100
+                rewards = np.array(rewards, dtype=np.float32) / REWARD_NORM
 
                 logger.debug(" rewards {}: {}", p, rewards)
 
                 if objective == "win" and p == winner:
-                    rewards[-1] += WINNING_REWARD
+                    rewards[-1] += WINNING_REWARD / REWARD_NORM
 
-                loss_components = loss_fn(
-                    model._net, weights, observations, actions, rewards
+                weights, opt_state = sgd_step(
+                    weights,
+                    opt_state,
+                    observations,
+                    actions,
+                    rewards,
                 )
+
+                loss_components = loss_fn(weights, observations, actions, rewards)
 
                 epoch_stats = dict(
                     actor_loss=loss_components[0],
@@ -211,25 +202,22 @@ def train_a2c(
                         buf.popleft()
                     buf.append(epoch_stats[key])
 
-                weights, opt_state = sgd_step(
-                    loss_fn,
-                    model._net,
-                    weights,
-                    optimizer,
-                    opt_state,
-                    observations,
-                    actions,
-                    rewards,
-                )
-
             model.set_weights(weights)
 
             if i % 10 == 0:
-                progress.set_postfix(
-                    {key: np.median(val) for key, val in running_stats.items()}
-                )
+                avg_score = np.mean(running_stats["score"])
+                if avg_score > best_score:
+                    best_score = avg_score
 
-            logger.info(" loss: {:.2e}", sum(loss_components))
+                    if checkpoint_path is not None:
+                        logger.warning(
+                            " Saving checkpoint for average score {:.2f}", avg_score
+                        )
+                        model.save(checkpoint_path)
+
+                progress.set_postfix(
+                    {key: np.mean(val) for key, val in running_stats.items()}
+                )
 
     except KeyboardInterrupt:
         pass
