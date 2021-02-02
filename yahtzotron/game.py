@@ -23,10 +23,11 @@ class Scorecard:
 
     def register_score(self, roll, cat_index):
         roll = np.array(roll)
+        total_score_old = self.total_score()
         score = self.ruleset_.score(roll, cat_index, self.filled)
         self.scores[cat_index] = score
         self.filled[cat_index] = 1
-        return score
+        return self.total_score() - total_score_old
 
     def score_summary(self):
         return np.array(self.ruleset_.score_summary(self.scores))

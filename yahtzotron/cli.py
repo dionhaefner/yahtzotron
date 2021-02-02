@@ -33,7 +33,7 @@ def cli(ctx):
     "--ruleset", type=click.Choice(list(AVAILABLE_RULESETS.keys())), default="yatzy"
 )
 @click.option("-n", "--num-epochs", type=click.IntRange(min=0), default=100)
-@click.option("--trainer", type=click.Choice(["genetic"]), default="genetic")
+@click.option("--trainer", type=click.Choice(["genetic", "a2c"]), default="a2c")
 @click.option("--no-restore", is_flag=True)
 @click.option(
     "-v",
@@ -56,7 +56,14 @@ def train(out, ruleset, num_epochs, trainer, loglevel, no_restore):
     if trainer == "genetic":
         from yahtzotron.trainers.genetic import train_genetic
 
-        train_genetic(yzt, num_epochs=num_epochs, restart=load_path is not None)
+        yzt = train_genetic(yzt, num_epochs=num_epochs, restart=load_path is not None)
+    elif trainer == "a2c":
+        from yahtzotron.trainers.a2c import train_a2c
+
+        if load_path is None:
+            yzt = train_a2c(yzt, num_epochs=10000, pretrain=True)
+
+        yzt = train_a2c(yzt, num_epochs=num_epochs)
 
     yzt.save(out)
 

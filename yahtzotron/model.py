@@ -2,8 +2,6 @@ import os
 import pickle
 import functools
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
 import haiku as hk
@@ -19,9 +17,7 @@ DISK_CACHE = os.path.expanduser(os.path.join('~', '.yahtzotron'))
 
 
 @memoize
-def create_strategy_net(num_dice, num_categories):
-    """Predicts category picked after turn"""
-
+def create_network(num_dice, num_categories):
     input_shapes = [
         1,  # current roll number
         6,  # count of each die value
@@ -31,53 +27,36 @@ def create_strategy_net(num_dice, num_categories):
         2,  # opponent scores
     ]
 
-    def model(x):
-        m = hk.Sequential(
-            [
-                hk.Linear(12),
-                jax.nn.relu,
-                hk.Linear(24),
-                jax.nn.relu,
-                hk.Linear(12),
-                jax.nn.relu,
-                hk.Linear(num_categories),
-                jax.nn.softmax,
-            ]
-        )
-        return m(x)
+    def network(inputs):
+        init = hk.initializers.VarianceScaling(2.0, "fan_in", "truncated_normal")
 
-    forward = hk.without_apply_rng(hk.transform(model))
+        x = hk.Linear(256, w_init=init)(inputs)
+        x = jax.nn.relu(x)
+        x = hk.Linear(256, w_init=init)(x)
+        x = jax.nn.relu(x)
+
+        out_value = hk.Linear(1)(x)
+        out_policy = hk.Linear(num_categories)(x)
+        out_policy = jnp.where(inputs[..., 7:7 + num_categories] == 1, -jnp.inf, out_policy)
+
+        return out_policy, jnp.squeeze(out_value, axis=-1)
+
+    forward = hk.without_apply_rng(hk.transform(network))
     return forward, input_shapes
 
 
 @memoize
-def create_value_net(num_categories):
-    """Predicts probability of player 1 winning over player 2"""
+def get_lut(path, ruleset):
+    if not os.path.isfile(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        roll_lut = assemble_roll_lut(ruleset)
+        with open(path, 'wb') as f:
+            pickle.dump(roll_lut, f)
 
-    input_shapes = [
-        num_categories,  # player scorecard
-        2,  # player scores
-        num_categories,  # opponent scorecard
-        2,  # opponent scores
-    ]
+    with open(path, 'rb') as f:
+        roll_lut = pickle.load(f)
 
-    def model(x):
-        m = hk.Sequential(
-            [
-                hk.Linear(12),
-                jax.nn.relu,
-                hk.Linear(24),
-                jax.nn.relu,
-                hk.Linear(12),
-                jax.nn.relu,
-                hk.Linear(1),
-                jax.nn.sigmoid,
-            ]
-        )
-        return m(x)
-
-    forward = hk.without_apply_rng(hk.transform(model))
-    return forward, input_shapes
+    return roll_lut
 
 
 class Yahtzotron:
@@ -89,13 +68,10 @@ class Yahtzotron:
             self._ruleset.num_dice,
             self._ruleset.num_categories,
         )
-        nets_and_shapes = dict(
-            # roll=create_roll_net(num_dice, num_categories),
-            strategy=create_strategy_net(num_dice, num_categories),
-            value=create_value_net(num_categories),
-        )
-        self._nets = {k: v[0] for k, v in nets_and_shapes.items()}
-        self._weights = {k: v[0].init(next(key), jnp.ones([1, np.sum(v[1])])) for k, v in nets_and_shapes.items()}
+
+        net, input_shape = create_network(num_dice, num_categories)
+        self._net = jax.jit(net.apply)
+        self._weights = net.init(next(key), jnp.ones((1, sum(input_shape)), dtype=jnp.float32))
 
         possible_objectives = ("win", "avg_score")
         if objective not in possible_objectives:
@@ -104,71 +80,25 @@ class Yahtzotron:
             )
 
         self._objective = objective
-        self._reinit_model = True
 
         if load_path is not None:
             self.load(load_path)
 
-    def turn(self, player_scorecard, opponent_scorecards, return_all_actions=False):
-        if not os.path.isfile(self._roll_lut_path):
-            os.makedirs(os.path.dirname(self._roll_lut_path), exist_ok=True)
-            roll_lut = assemble_roll_lut(self._ruleset)
-            with open(self._roll_lut_path, 'wb') as f:
-                pickle.dump(roll_lut, f)
-
-        with open(self._roll_lut_path, 'rb') as f:
-            roll_lut = pickle.load(f)
+    def turn(self, player_scorecard, opponent_scorecards, return_all_actions=False, pretrain=False):
+        roll_lut = get_lut(self._roll_lut_path, self._ruleset)
 
         return turn_fast(
             player_scorecard,
             opponent_scorecards,
             objective=self._objective,
-            nets=self._nets,
+            net=self._net,
             weights=self._weights,
             num_dice=self._ruleset.num_dice,
             num_categories=self._ruleset.num_categories,
             roll_lut=roll_lut,
+            return_all_actions=return_all_actions,
+            greedy=pretrain
         )
-
-    def pre_train(self, num_samples=100_000):
-        """Pre-train value network to go for maximum scores"""
-        return
-        # train_scorecard = np.random.random_integers(0, 1, size=(num_samples, self._ruleset.num_categories))
-        # train_scores = np.random.random_integers(0, 125, size=(2, num_samples, 2))
-        # winning_log_odds = (train_scores[0].sum(axis=1) - train_scores[1].sum(axis=1)) / 50
-        # winning_prob = 1. / (1. + np.exp(-winning_log_odds))
-        # train_labels = np.random.binomial(1, p=winning_prob, size=(num_samples,))
-
-        # self._nets['value'].fit(
-        #     [train_scorecard, train_scores[0], train_scorecard, train_scores[1]],
-        #     train_labels,
-        #     epochs=2
-        # )
-
-        # train_rolls = np.random.random_integers(1, 6, size=(num_samples, self._ruleset.num_dice))
-        # train_dice_counts = np.apply_along_axis(
-        #     lambda x: np.bincount(x, minlength=7)[1:],
-        #     axis=1, arr=train_rolls
-        # )
-
-        # train_rewards = np.array([
-        #     [self._ruleset.score(dice_count, cat_idx, scorecard) if not scorecard[cat_idx] else -1 for cat_idx in range(self._ruleset.num_categories)]
-        #     for dice_count, scorecard in zip(train_dice_counts, train_scorecard)
-        # ])
-
-        # train_best_category = to_categorical(np.argmax(train_rewards, axis=-1))
-
-        # self._nets['strategy_1'].fit(
-        #     [train_dice_counts, train_scorecard, train_scores[0], train_scorecard, train_scores[1]],
-        #     train_best_category,
-        #     epochs=10
-        # )
-
-        # self._nets['strategy_2'].fit(
-        #     [train_dice_counts, train_scorecard, train_scores[0], train_scorecard, train_scores[1]],
-        #     train_best_category,
-        #     epochs=10
-        # )
 
     def get_weights(self):
         return self._weights

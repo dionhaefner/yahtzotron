@@ -3,128 +3,130 @@ from functools import partial
 import numpy as np
 from loguru import logger
 
-import jax
-import jax.numpy as jnp
-import haiku as hk
-
-from .strategy import reward_idx_to_action
-
-key = hk.PRNGSequence(17)
-
-
-@jax.jit
-def _get_roll(current_dice, key):
-    roll = jax.random.randint(key, shape=current_dice.shape, minval=1, maxval=7, dtype=jnp.uint8)
-    return jnp.sort(jnp.where(current_dice == 0, roll, current_dice), axis=-1)
-
-
-def _scorecards_to_array(scorecards):
-    return jnp.asarray(jax.tree_map(lambda s: s.to_array(), scorecards))
-
-
-@partial(jax.jit, static_argnums=(0,))
-@partial(jax.vmap, in_axes=(None, None, 0))
-def _apply_valuenet(net, weights, inputs):
-    return net.apply(weights, inputs)[:, 0]
-
-
-@partial(jax.jit, static_argnums=(1,))
-@partial(jax.vmap, in_axes=(0, None))
-def _vector_bincount(x, length):
-    return jnp.bincount(x, length=length)
-
 
 def turn_fast(
     player_scorecard,
-    opponent_scorecards,
+    opponent_scorecard,
     objective,
-    nets,
+    net,
     weights,
     num_dice,
     num_categories,
     roll_lut,
     return_all_actions=False,
+    greedy=False,
 ):
-    player_scorecard_jax = _scorecards_to_array(player_scorecard)
+    # from pympler import tracker
+    # tr = tracker.SummaryTracker()
+    if return_all_actions:
+        recorded_actions = []
 
-    # if player_scorecard_jax.ndim == 1:
-    #     player_scorecard_jax = jnp.expand_dims(player_scorecard_jax, 0)
+    player_scorecard_arr = player_scorecard.to_array()
 
-    # if objective == "win":
-    #     opponent_scorecard_jax = _scorecards_to_array(opponent_scorecards)
-    #     if opponent_scorecard_jax.ndim == 2:
-    #         opponent_scorecard_jax = jnp.expand_dims(opponent_scorecard_jax, 0)
+    if objective == "win":
+        opponent_scorecard_arr = opponent_scorecard.to_array()
 
-    #     strongest_opponent = get_strongest_opponent(
-    #         player_scorecard_jax, opponent_scorecard_jax, nets["value"], weights["value"]
-    #     )
-    # elif objective == "avg_score":
-    #     # beating someone with equal score means maximizing expected final score
-    strongest_opponent = player_scorecard_jax
+    elif objective == "avg_score":
+        # beating someone with equal score means maximizing expected final score
+        opponent_scorecard_arr = player_scorecard_arr
 
-    num_games = player_scorecard_jax.shape[0]
-    current_dice = jnp.zeros((num_games, num_dice), dtype=jnp.uint8)
-    dice_to_keep = jnp.ones_like(current_dice)
-    key.reserve(num_games * 6)
+    current_dice = (0,) * num_dice
+    dice_to_keep = (0,) * num_dice
 
     for roll_number in range(3):
-        current_dice = _get_roll(current_dice * dice_to_keep, next(key))
+        current_dice = tuple(
+            sorted(die if keep else np.random.randint(1, 7) for die, keep in zip(current_dice, dice_to_keep))
+        )
+        dice_count = np.bincount(current_dice, minlength=7)[1:]
 
-        random_keys = jnp.asarray([next(key) for _ in range(num_games)])
-        category_idx = get_category_action(
+        cat_out = get_category_action(
             roll_number,
-            current_dice,
-            player_scorecard_jax,
-            strongest_opponent,
-            random_keys,
-            nets['strategy'],
-            weights['strategy'],
+            dice_count,
+            player_scorecard_arr,
+            opponent_scorecard_arr,
+            net,
+            weights,
             num_dice,
+            return_all_actions,
         )
 
+        if return_all_actions:
+            cat_in, category_idx, logits, value = cat_out
+        else:
+            category_idx, value = cat_out
+
+        if greedy:
+            category_idx = get_category_action_greedy(roll_number, current_dice, player_scorecard, roll_lut)
+
+        category_idx = int(category_idx)
+
         if roll_number != 2:
-            keep_actions = [np.argmax(roll_lut[(tuple(r), cat_idx)]) for r, cat_idx in zip(current_dice, category_idx)]
-            dice_to_keep = jnp.asarray([reward_idx_to_action(a, num_dice) for a in keep_actions])
+            dice_to_keep = max(
+                roll_lut['full'][current_dice][category_idx].keys(),
+                key=lambda k: roll_lut['full'][current_dice][category_idx][k]
+            )
 
-    logger.info("Picked category {}", category_idx)
+        if return_all_actions:
+            recorded_actions.append((roll_number, cat_in, category_idx))
+            logger.debug(" Observation: {}", cat_in)
+            logger.debug(" Logits: {}", logits)
+            logger.debug(" Action: {}", category_idx)
+            logger.debug(" Value: {}", value)
 
-    dice_count = _vector_bincount(current_dice, 7)[:, 1:]
-    return dice_count, category_idx
+    logger.info("Final roll: {} | Picked category: {}", current_dice, category_idx)
 
+    dice_count = np.bincount(current_dice, minlength=7)[1:]
 
-@partial(jax.jit, static_argnums=(2,))
-@partial(jax.vmap, in_axes=(0, 0, None, None))
-def get_strongest_opponent(player_scorecard, opponent_scorecards, net, weights):
-    num_opponents = opponent_scorecards.shape[0]
-    valuenet_in = jnp.concatenate(
-        [opponent_scorecards, jnp.tile(player_scorecard, (num_opponents, 1))], axis=1
-    )
-    opponent_strength = net.apply(weights, valuenet_in)
-    logger.debug("Opponent strengths: {}", opponent_strength)
-    strongest_opponent_idx = jnp.argmax(opponent_strength)
-    return opponent_scorecards[strongest_opponent_idx]
+    if return_all_actions:
+        return dice_count, category_idx, value, recorded_actions
+
+    return dice_count, category_idx, value
 
 
-@partial(jax.jit, static_argnums=(5, 7))
-@partial(jax.vmap, in_axes=(None, 0, 0, 0, 0, None, None, None))
 def get_category_action(
     roll_number,
-    current_dice,
+    dice_count,
     player_scorecard,
-    strongest_opponent,
-    random_key,
+    opponent_scorecard,
     net,
     weights,
     num_dice,
+    return_inputs=False,
 ):
-    dice_count = jnp.bincount(current_dice, length=7)[1:]
+    strategynet_in = np.concatenate([np.array([roll_number]), np.array(dice_count), player_scorecard, opponent_scorecard])
+    
+    policy_logits, value = net(weights, strategynet_in)
+    prob = np.exp(policy_logits)
+    prob /= prob.sum()
+    category_action = np.random.choice(policy_logits.shape[0], p=prob)
 
-    strategynet_in = jnp.concatenate([jnp.array([roll_number]), dice_count, player_scorecard, strongest_opponent])
-    strategynet_out = net.apply(weights, strategynet_in)
-    strategynet_out = jnp.where(player_scorecard[:-2].T == 1, 0, 1e-8 + strategynet_out)
+    if return_inputs:
+        return strategynet_in, category_action, policy_logits, value
 
-    category_action = jax.random.choice(random_key, len(strategynet_out), p=strategynet_out)
-    return category_action
+    return category_action, value
+
+
+def get_category_action_greedy(roll_number, current_dice, player_scorecard, roll_lut):
+    # greedily pick action with highest expected reward advantage
+    # this is not optimal play but should be a good baseline
+    num_dice = player_scorecard.ruleset_.num_dice
+    num_categories = player_scorecard.ruleset_.num_categories
+
+    if roll_number == 2:
+        # there is no keep action, so only keeping all dice counts
+        best_payoff = lambda lut, cat: lut[cat][(1,) * num_dice]
+        marginal_lut = roll_lut['marginal-0']
+    else:
+        best_payoff = lambda lut, cat: max(lut[cat].values())
+        marginal_lut = roll_lut['marginal-1']
+
+    expected_payoff = [
+        (best_payoff(roll_lut['full'][current_dice], c) if player_scorecard.filled[c] == 0 else -float("inf"))
+        - marginal_lut[c]
+        for c in range(num_categories)
+    ]
+    category_idx = np.argmax(expected_payoff)
+    return category_idx
 
 
 def print_score(scorecard):
