@@ -35,7 +35,10 @@ def turn_fast(
 
     for roll_number in range(3):
         current_dice = tuple(
-            sorted(die if keep else np.random.randint(1, 7) for die, keep in zip(current_dice, dice_to_keep))
+            sorted(
+                die if keep else np.random.randint(1, 7)
+                for die, keep in zip(current_dice, dice_to_keep)
+            )
         )
         dice_count = np.bincount(current_dice, minlength=7)[1:]
 
@@ -56,14 +59,16 @@ def turn_fast(
             category_idx, value = cat_out
 
         if greedy:
-            category_idx = get_category_action_greedy(roll_number, current_dice, player_scorecard, roll_lut)
+            category_idx = get_category_action_greedy(
+                roll_number, current_dice, player_scorecard, roll_lut
+            )
 
         category_idx = int(category_idx)
 
         if roll_number != 2:
             dice_to_keep = max(
-                roll_lut['full'][current_dice][category_idx].keys(),
-                key=lambda k: roll_lut['full'][current_dice][category_idx][k]
+                roll_lut["full"][current_dice][category_idx].keys(),
+                key=lambda k: roll_lut["full"][current_dice][category_idx][k],
             )
 
         if return_all_actions:
@@ -93,8 +98,14 @@ def get_category_action(
     num_dice,
     return_inputs=False,
 ):
-    strategynet_in = np.concatenate([np.array([roll_number]), np.array(dice_count), player_scorecard, opponent_scorecard])
-    
+    strategynet_in = np.concatenate(
+        [
+            np.array([roll_number]),
+            np.array(dice_count),
+            player_scorecard,
+            opponent_scorecard,
+        ]
+    )
     policy_logits, value = net(weights, strategynet_in)
     prob = np.exp(policy_logits)
     prob /= prob.sum()
@@ -115,13 +126,17 @@ def get_category_action_greedy(roll_number, current_dice, player_scorecard, roll
     if roll_number == 2:
         # there is no keep action, so only keeping all dice counts
         best_payoff = lambda lut, cat: lut[cat][(1,) * num_dice]
-        marginal_lut = roll_lut['marginal-0']
+        marginal_lut = roll_lut["marginal-0"]
     else:
         best_payoff = lambda lut, cat: max(lut[cat].values())
-        marginal_lut = roll_lut['marginal-1']
+        marginal_lut = roll_lut["marginal-1"]
 
     expected_payoff = [
-        (best_payoff(roll_lut['full'][current_dice], c) if player_scorecard.filled[c] == 0 else -float("inf"))
+        (
+            best_payoff(roll_lut["full"][current_dice], c)
+            if player_scorecard.filled[c] == 0
+            else -float("inf")
+        )
         - marginal_lut[c]
         for c in range(num_categories)
     ]

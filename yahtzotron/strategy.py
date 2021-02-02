@@ -32,11 +32,15 @@ def get_expected_reward(initial_roll, cat_idx, ruleset):
         num_rerolled = num_dice - len(kept_dice)
 
         count = 0
-        expected_reward[action] = 0.
-        for final_roll in itertools.combinations_with_replacement(range(1, 7), num_rerolled):
+        expected_reward[action] = 0.0
+        for final_roll in itertools.combinations_with_replacement(
+            range(1, 7), num_rerolled
+        ):
             possible_combinations = num_unique_permutations(final_roll)
             final_dice = tuple(sorted(kept_dice + final_roll))
-            expected_reward[action] += possible_combinations * _memoized_score(final_dice, cat_idx, dummy_scorecard, ruleset)
+            expected_reward[action] += possible_combinations * _memoized_score(
+                final_dice, cat_idx, dummy_scorecard, ruleset
+            )
             count += possible_combinations
 
         expected_reward[action] /= count
@@ -53,7 +57,11 @@ def assemble_roll_lut(ruleset):
 
     expected_reward = {}
 
-    pbar = tqdm.tqdm(roll_combinations, desc='Pre-computing payoff LUT... ' + '🎲' * num_dice, total=total_elements)
+    pbar = tqdm.tqdm(
+        roll_combinations,
+        desc="Pre-computing payoff LUT... " + "🎲" * num_dice,
+        total=total_elements,
+    )
 
     for initial_roll in pbar:
         expected_reward[initial_roll] = {}
@@ -72,15 +80,19 @@ def assemble_roll_lut(ruleset):
         count = 0
         for roll, reward in expected_reward.items():
             multiplier = num_unique_permutations(roll)
-            expected_marginal_reward_0step[cat_idx] += multiplier * reward[cat_idx][(1,) * num_dice]
-            expected_marginal_reward_1step[cat_idx] += multiplier * max(reward[cat_idx].values())
+            expected_marginal_reward_0step[cat_idx] += (
+                multiplier * reward[cat_idx][(1,) * num_dice]
+            )
+            expected_marginal_reward_1step[cat_idx] += multiplier * max(
+                reward[cat_idx].values()
+            )
             count += multiplier
 
         expected_marginal_reward_0step[cat_idx] /= count
         expected_marginal_reward_1step[cat_idx] /= count
 
     return {
-        'full': expected_reward,
-        'marginal-0': expected_marginal_reward_0step,
-        'marginal-1': expected_marginal_reward_1step,
+        "full": expected_reward,
+        "marginal-0": expected_marginal_reward_0step,
+        "marginal-1": expected_marginal_reward_1step,
     }

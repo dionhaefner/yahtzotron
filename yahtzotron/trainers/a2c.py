@@ -76,7 +76,7 @@ def a2c_loss(network, weights, observations, actions, rewards):
 def supervised_loss(network, weights, observations, actions, rewards):
     td_lambda = 0.9
     discount = 0.99
-    entropy_cost = 0.
+    entropy_cost = 0.0
 
     logits, values = network(weights, observations)
     values = jnp.append(values, jnp.sum(rewards))
@@ -101,11 +101,15 @@ def supervised_loss(network, weights, observations, actions, rewards):
 
 
 @partial(jax.jit, static_argnums=(0, 1, 3))
-def sgd_step(loss, network, weights, optimizer, opt_state, observations, actions, rewards):
+def sgd_step(
+    loss, network, weights, optimizer, opt_state, observations, actions, rewards
+):
     """Does a step of SGD over a trajectory."""
     max_gradient_norm = 0.5
     total_loss = lambda *args: sum(loss(*args))
-    gradients = jax.grad(total_loss, 1)(network, weights, observations, actions, rewards)
+    gradients = jax.grad(total_loss, 1)(
+        network, weights, observations, actions, rewards
+    )
     gradients = clip_grads(gradients, max_gradient_norm)
     updates, opt_state = optimizer.update(gradients, opt_state)
     weights = optax.apply_updates(weights, updates)
@@ -139,19 +143,28 @@ def play_game(model, players_per_game, pretrain=False):
     return scores, trajectories, player_values
 
 
-def train_a2c(model, num_epochs, players_per_game=4, learning_rate=1e-3, pretrain=False):
+def train_a2c(
+    model, num_epochs, players_per_game=4, learning_rate=1e-3, pretrain=False
+):
     """Train model through self-play"""
     objective = model._objective
 
-    optimizer = optax.MultiSteps(optax.adam(learning_rate), players_per_game, use_grad_mean=False)
+    optimizer = optax.MultiSteps(
+        optax.adam(learning_rate), players_per_game, use_grad_mean=False
+    )
     opt_state = optimizer.init(model.get_weights())
 
-    running_stats = {k: deque(maxlen=1000) for k in ('score', 'loss', 'actor_loss', 'critic_loss', 'entropy_loss')}
+    running_stats = {
+        k: deque(maxlen=1000)
+        for k in ("score", "loss", "actor_loss", "critic_loss", "entropy_loss")
+    }
     progress = tqdm.tqdm(range(num_epochs))
 
     try:
         for i in progress:
-            scores, trajectories, player_values = play_game(model, players_per_game, pretrain)
+            scores, trajectories, player_values = play_game(
+                model, players_per_game, pretrain
+            )
 
             final_scores = [s.total_score() for s in scores]
             winner = np.argmax(final_scores)
@@ -159,7 +172,7 @@ def train_a2c(model, num_epochs, players_per_game=4, learning_rate=1e-3, pretrai
                 "Player {} won with a score of {} (median {})",
                 winner,
                 final_scores[winner],
-                np.median(final_scores)
+                np.median(final_scores),
             )
             logger.info(
                 " Winning scorecard:\n{}",
@@ -182,23 +195,39 @@ def train_a2c(model, num_epochs, players_per_game=4, learning_rate=1e-3, pretrai
                 if objective == "win" and p == winner:
                     rewards[-1] += WINNING_REWARD
 
-                loss_components = loss_fn(model._net, weights, observations, actions, rewards)
+                loss_components = loss_fn(
+                    model._net, weights, observations, actions, rewards
+                )
 
                 epoch_stats = dict(
-                    actor_loss=loss_components[0], critic_loss=loss_components[1], entropy_loss=loss_components[2],
-                    loss=sum(loss_components), score=scores[p].total_score()
+                    actor_loss=loss_components[0],
+                    critic_loss=loss_components[1],
+                    entropy_loss=loss_components[2],
+                    loss=sum(loss_components),
+                    score=scores[p].total_score(),
                 )
                 for key, buf in running_stats.items():
                     if len(buf) == buf.maxlen:
                         buf.popleft()
                     buf.append(epoch_stats[key])
 
-                weights, opt_state = sgd_step(loss_fn, model._net, weights, optimizer, opt_state, observations, actions, rewards)
+                weights, opt_state = sgd_step(
+                    loss_fn,
+                    model._net,
+                    weights,
+                    optimizer,
+                    opt_state,
+                    observations,
+                    actions,
+                    rewards,
+                )
 
             model.set_weights(weights)
 
             if i % 10 == 0:
-                progress.set_postfix({key: np.median(val) for key, val in running_stats.items()})
+                progress.set_postfix(
+                    {key: np.median(val) for key, val in running_stats.items()}
+                )
 
             logger.info(" loss: {:.2e}", sum(loss_components))
 

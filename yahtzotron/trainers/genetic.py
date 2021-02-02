@@ -25,9 +25,7 @@ def compute_fitness(scores, objective, tau=0.1):
             rank_per_player.append(player_ranks)
         rank_per_player = np.asarray(rank_per_player)
 
-        fitness_per_game = (
-            1 / rank_per_player ** 2
-        )
+        fitness_per_game = 1 / rank_per_player ** 2
         return np.mean(fitness_per_game, axis=1)
 
     if objective == "avg_score":
@@ -53,7 +51,7 @@ def mutate(league, eps, mutate_prob=0.01):
 def procreate_asexual(league, fitness, eps):
     league_size = len(league)
     num_veterans = max(int(0.2 * league_size), 1)
-    num_new_players = 0 #max(int(0.1 * league_size), 1)
+    num_new_players = 0  # max(int(0.1 * league_size), 1)
     num_offspring = league_size - num_new_players - num_veterans
 
     offspring_idx = random.choices(range(league_size), weights=fitness, k=num_offspring)
@@ -142,7 +140,9 @@ def plot_state(pipe):
     plt.close(fig)
 
 
-def train_genetic(model, num_epochs, league_size=10, eps=0.1, games_per_epoch=10, restart=False):
+def train_genetic(
+    model, num_epochs, league_size=10, eps=0.1, games_per_epoch=10, restart=False
+):
     """Train model through self-play"""
     ruleset = model._ruleset
     objective = model._objective
