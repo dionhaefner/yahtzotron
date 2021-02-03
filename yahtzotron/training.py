@@ -43,7 +43,7 @@ def clip_grads(grad_tree, max_norm):
 
 
 def compile_loss_function(
-    typ, network, td_lambda=0.9, discount=0.99, entropy_cost=0.01
+    type_, network, td_lambda=0.9, discount=0.99, entropy_cost=0.
 ):
     def loss(weights, observations, actions, rewards):
         """Actor-critic loss."""
@@ -59,14 +59,14 @@ def compile_loss_function(
         )
         critic_loss = jnp.mean(td_errors ** 2)
 
-        if typ == "a2c":
+        if type_ == "a2c":
             actor_loss = rlax.policy_gradient_loss(
                 logits_t=logits,
                 a_t=actions,
                 adv_t=td_errors,
                 w_t=jnp.ones(td_errors.shape[0]),
             )
-        elif typ == "supervised":
+        elif type_ == "supervised":
             mask = jnp.isfinite(logits)
             logprob = jax.nn.log_softmax(jnp.where(mask, logits, -1e5))
             labels = jax.nn.one_hot(actions, logits.shape[-1])
@@ -189,6 +189,7 @@ def train_a2c(
                 )
 
                 loss_components = loss_fn(weights, observations, actions, rewards)
+                loss_components = [float(np.asarray(k)) for k in loss_components]
 
                 epoch_stats = dict(
                     actor_loss=loss_components[0],
@@ -206,7 +207,7 @@ def train_a2c(
 
             if i % 10 == 0:
                 avg_score = np.mean(running_stats["score"])
-                if avg_score > best_score:
+                if avg_score > best_score and i > running_stats["score"].maxlen:
                     best_score = avg_score
 
                     if checkpoint_path is not None:
