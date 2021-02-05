@@ -29,7 +29,12 @@ def create_network(num_dice, num_categories):
         2,  # opponent scores
     ]
 
+    keep_action_space = 2 ** num_dice
+
     def network(inputs):
+        player_scorecard_idx = slice(
+            sum(input_shapes[:2]), sum(input_shapes[:3])
+        )
         init = hk.initializers.VarianceScaling(2.0, "fan_in", "truncated_normal")
 
         x = hk.Linear(256, w_init=init)(inputs)
@@ -38,12 +43,17 @@ def create_network(num_dice, num_categories):
         x = jax.nn.relu(x)
 
         out_value = hk.Linear(1)(x)
-        out_policy = hk.Linear(num_categories)(x)
-        out_policy = jnp.where(
-            inputs[..., 7 : 7 + num_categories] == 1, -jnp.inf, out_policy
+
+        dice_encoding = hk.Linear(num_dice)(x)
+        dice_encoding = jax.nn.sigmoid(dice_encoding)
+        out_keep = hk.Linear(keep_action_space)(dice_encoding)
+        
+        out_category = hk.Linear(num_categories)(x)
+        out_category = jnp.where(
+            inputs[..., player_scorecard_idx] == 1, -jnp.inf, out_category
         )
 
-        return out_policy, jnp.squeeze(out_value, axis=-1)
+        return out_keep, out_category, jnp.squeeze(out_value, axis=-1)
 
     forward = hk.without_apply_rng(hk.transform(network))
     return forward, input_shapes
@@ -71,13 +81,8 @@ def turn_fast(
     weights,
     num_dice,
     num_categories,
-    roll_lut,
-    return_all_actions=False,
-    greedy=False,
+    use_roll_lut=None,
 ):
-    if return_all_actions:
-        recorded_actions = []
-
     player_scorecard_arr = player_scorecard.to_array()
 
     if objective == "win":
@@ -90,7 +95,7 @@ def turn_fast(
     current_dice = (0,) * num_dice
     dice_to_keep = (0,) * num_dice
 
-    for roll_number in range(3):
+    for rolls_left in range(2, -1, -1):
         current_dice = tuple(
             sorted(
                 die if keep else np.random.randint(1, 7)
@@ -99,95 +104,82 @@ def turn_fast(
         )
         dice_count = np.bincount(current_dice, minlength=7)[1:]
 
-        cat_out = get_category_action(
-            roll_number,
+        net_input, keep_action, category_idx, value = get_roll_action(
+            rolls_left,
             dice_count,
             player_scorecard_arr,
             opponent_scorecard_arr,
             net,
             weights,
-            num_dice,
-            return_all_actions,
         )
 
-        if return_all_actions:
-            cat_in, category_idx, logits, value = cat_out
-        else:
-            category_idx, value = cat_out
-
-        if greedy:
-            category_idx = get_category_action_greedy(
-                roll_number, current_dice, player_scorecard, roll_lut
+        if use_roll_lut is not None:
+            keep_action, category_idx = get_roll_action_greedy(
+                rolls_left, current_dice, player_scorecard, use_roll_lut
             )
 
-        category_idx = int(category_idx)
+        dice_to_keep = np.unpackbits(np.uint8(keep_action), count=num_dice, bitorder='little')
 
-        if roll_number != 2:
-            dice_to_keep = max(
-                roll_lut["full"][current_dice][category_idx].keys(),
-                key=lambda k: roll_lut["full"][current_dice][category_idx][k],
-            )
+        logger.debug(" Observation: {}", net_input)
+        logger.debug(" Cat. action: {}", category_idx)
+        logger.debug(" Keep action: {} / {}", dice_to_keep, keep_action)
+        logger.debug(" Value: {}", value)
 
-        if return_all_actions:
-            recorded_actions.append((roll_number, cat_in, category_idx))
-            logger.debug(" Observation: {}", cat_in)
-            logger.debug(" Logits: {}", logits)
-            logger.debug(" Action: {}", category_idx)
-            logger.debug(" Value: {}", value)
+        yield dict(
+            rolls_left=rolls_left,
+            net_input=net_input,
+            keep_action=keep_action,
+            category_idx=category_idx,
+            value=value,
+            dice_count=dice_count,
+        )
 
     logger.info("Final roll: {} | Picked category: {}", current_dice, category_idx)
 
-    dice_count = np.bincount(current_dice, minlength=7)[1:]
 
-    if return_all_actions:
-        return dice_count, category_idx, value, recorded_actions
-
-    return dice_count, category_idx, value
-
-
-def get_category_action(
-    roll_number,
+def get_roll_action(
+    rolls_left,
     dice_count,
     player_scorecard,
     opponent_scorecard,
     net,
     weights,
-    num_dice,
-    return_inputs=False,
 ):
-    strategynet_in = np.concatenate(
+    def choose_from_logits(logits):
+        # pure NumPy version of jax.random.categorical
+        logits = np.asarray(logits)
+        prob = np.exp(logits - logits.max())
+        prob /= prob.sum()
+        return np.random.choice(logits.shape[0], p=prob)
+
+    network_inputs = np.concatenate(
         [
-            np.array([roll_number]),
+            np.array([rolls_left]),
             np.array(dice_count),
             player_scorecard,
             opponent_scorecard,
         ]
     )
-    policy_logits, value = net(weights, strategynet_in)
-    policy_logits = np.asarray(policy_logits)
-    prob = np.exp(policy_logits - policy_logits.max())
-    prob /= prob.sum()
-    category_action = np.random.choice(policy_logits.shape[0], p=prob)
+    keep_logits, category_logits, value = net(weights, network_inputs)
+    keep_action = choose_from_logits(keep_logits)
+    category_action = choose_from_logits(category_logits)
 
-    if return_inputs:
-        return strategynet_in, category_action, policy_logits, value
-
-    return category_action, value
+    return network_inputs, keep_action, category_action, value
 
 
-def get_category_action_greedy(roll_number, current_dice, player_scorecard, roll_lut):
+def get_roll_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
     # greedily pick action with highest expected reward advantage
     # this is not optimal play but should be a good baseline
     num_dice = player_scorecard.ruleset_.num_dice
     num_categories = player_scorecard.ruleset_.num_categories
 
-    if roll_number == 2:
+    if rolls_left > 0:
+        best_payoff = lambda lut, cat: max(lut[cat].values())
+        marginal_lut = roll_lut["marginal-1"]
+    else:
         # there is no keep action, so only keeping all dice counts
         best_payoff = lambda lut, cat: lut[cat][(1,) * num_dice]
         marginal_lut = roll_lut["marginal-0"]
-    else:
-        best_payoff = lambda lut, cat: max(lut[cat].values())
-        marginal_lut = roll_lut["marginal-1"]
 
     expected_payoff = [
         (
@@ -198,8 +190,18 @@ def get_category_action_greedy(roll_number, current_dice, player_scorecard, roll
         - marginal_lut[c]
         for c in range(num_categories)
     ]
-    category_idx = np.argmax(expected_payoff)
-    return category_idx
+    category_action = np.argmax(expected_payoff)
+
+    if rolls_left > 0:
+        dice_to_keep = max(
+            roll_lut["full"][current_dice][category_action].keys(),
+            key=lambda k: roll_lut["full"][current_dice][category_action][k],
+        )
+    else:
+        dice_to_keep = (1,) * num_dice
+
+    keep_action = int(np.packbits(dice_to_keep, bitorder='little'))
+    return keep_action, category_action
 
 
 class Yahtzotron:
@@ -233,12 +235,13 @@ class Yahtzotron:
         self,
         player_scorecard,
         opponent_scorecards,
-        return_all_actions=False,
         pretrain=False,
     ):
-        roll_lut = get_lut(self._roll_lut_path, self._ruleset)
+        roll_lut = None
+        if pretrain:
+            roll_lut = get_lut(self._roll_lut_path, self._ruleset)
 
-        return turn_fast(
+        yield from turn_fast(
             player_scorecard,
             opponent_scorecards,
             objective=self._objective,
@@ -246,9 +249,7 @@ class Yahtzotron:
             weights=self._weights,
             num_dice=self._ruleset.num_dice,
             num_categories=self._ruleset.num_categories,
-            roll_lut=roll_lut,
-            return_all_actions=return_all_actions,
-            greedy=pretrain,
+            use_roll_lut=roll_lut,
         )
 
     def get_weights(self):
