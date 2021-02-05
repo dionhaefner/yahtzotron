@@ -55,9 +55,9 @@ def train(out, ruleset, num_epochs, loglevel, no_restore, objective):
     yzt = Yahtzotron(ruleset=ruleset, objective=objective, load_path=load_path)
 
     if load_path is None:
-        yzt = train_a2c(yzt, num_epochs=25000, pretrain=True, learning_rate=1e-3)
+        yzt = train_a2c(yzt, num_epochs=20000, pretrain=True)
 
-    yzt = train_a2c(yzt, num_epochs=num_epochs, checkpoint_path=out, learning_rate=1e-4)
+    yzt = train_a2c(yzt, num_epochs=num_epochs, checkpoint_path=out)
 
     yzt.save(out)
 
