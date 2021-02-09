@@ -82,10 +82,7 @@ def compile_loss_function(
         elif type_ == "supervised":
             actor_loss = jnp.mean(cross_entropy(pertinent_logits, pertinent_actions))
 
-        entropy_loss = -(
-            jnp.mean(entropy(keep_logits))
-            + jnp.mean(entropy(cat_logits))
-        )
+        entropy_loss = -jnp.mean(entropy(pertinent_logits))
 
         return policy_cost * actor_loss, critic_loss, entropy_cost * entropy_loss
 
