@@ -291,7 +291,10 @@ class Yahtzotron:
         else:
             opponent_value = None
 
-        roll_lut = get_lut(self._roll_lut_path, self._ruleset)
+        if greedy:
+            roll_lut = get_lut(self._roll_lut_path, self._ruleset)
+        else:
+            roll_lut = None
 
         yield from play_turn(
             player_scorecard,
