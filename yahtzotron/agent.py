@@ -45,8 +45,8 @@ def create_network(objective, num_dice, num_categories):
 
         out_value = hk.Linear(1)(x)
 
-        dice_encoding = hk.Linear(num_dice, w_init=init)(x)
-        dice_encoding = jax.nn.relu(dice_encoding)
+        dice_encoding = hk.Linear(num_dice)(x)
+        dice_encoding = jax.nn.sigmoid(dice_encoding)
         out_keep = hk.Linear(keep_action_space)(dice_encoding)
 
         out_category = hk.Linear(num_categories)(x)
