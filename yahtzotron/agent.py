@@ -106,7 +106,7 @@ def play_turn(
             )
             value = None
         else:
-            net_input, keep_action, category_idx, value = get_action(
+            net_input, category_idx, value = get_action(
                 rolls_left,
                 dice_count,
                 player_scorecard_arr,
