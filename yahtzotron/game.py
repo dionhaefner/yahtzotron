@@ -96,7 +96,7 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
 
                 if record_trajectories:
                     trajectories[p].append(
-                        (turn_state["net_input"], turn_state["keep_action"], turn_state["category_idx"], reward)
+                        (turn_state["net_input"], turn_state["category_idx"], reward)
                     )
 
     if record_trajectories:

@@ -49,10 +49,9 @@ def cross_entropy(logits, actions):
 def compile_loss_function(
     type_, network, td_lambda=0.6, discount=0.99, policy_cost=0.25, entropy_cost=1e-3
 ):
-    def loss(weights, observations, keep_actions, cat_actions, rewards):
+    def loss(weights, observations, actions, rewards):
         """Actor-critic loss."""
-        rolls_left = observations[..., 0]
-        keep_logits, cat_logits, values = network(weights, observations)
+        logits, values = network(weights, observations)
         values = jnp.append(values, jnp.sum(rewards))
 
         td_errors = rlax.td_lambda(
@@ -64,28 +63,17 @@ def compile_loss_function(
         )
         critic_loss = jnp.mean(td_errors ** 2)
 
-        pertinent_mask = rolls_left == 0
-        pertinent_logits = jnp.where(
-            pertinent_mask.reshape(-1, 1),
-            jnp.pad(cat_logits, ((0, 0), (0, keep_logits.shape[1] - cat_logits.shape[1])), constant_values=-jnp.inf),
-            keep_logits
-        )
-        pertinent_actions = jnp.where(pertinent_mask, cat_actions, keep_actions)
-
         if type_ == "a2c":
             actor_loss = rlax.policy_gradient_loss(
-                logits_t=pertinent_logits,
-                a_t=pertinent_actions,
+                logits_t=logits,
+                a_t=actions,
                 adv_t=td_errors,
                 w_t=jnp.ones(td_errors.shape[0]),
             )
         elif type_ == "supervised":
-            actor_loss = jnp.mean(cross_entropy(pertinent_logits, pertinent_actions))
+            actor_loss = jnp.mean(cross_entropy(logits, actions))
 
-        entropy_loss = -(
-            jnp.mean(entropy(keep_logits))
-            + jnp.mean(entropy(cat_logits))
-        )
+        entropy_loss = -jnp.mean(entropy(logits))
 
         return policy_cost * actor_loss, critic_loss, entropy_cost * entropy_loss
 
@@ -93,10 +81,10 @@ def compile_loss_function(
 
 
 def compile_sgd_step(loss, network, optimizer, max_gradient_norm=0.5):
-    def sgd_step(weights, opt_state, observations, keep_actions, cat_actions, rewards):
+    def sgd_step(weights, opt_state, observations, actions, rewards):
         """Does a step of SGD over a trajectory."""
         total_loss = lambda *args: sum(loss(*args))
-        gradients = jax.grad(total_loss)(weights, observations, keep_actions, cat_actions, rewards)
+        gradients = jax.grad(total_loss)(weights, observations, actions, rewards)
         gradients = clip_grads(gradients, max_gradient_norm)
         updates, opt_state = optimizer.update(gradients, opt_state)
         weights = optax.apply_updates(weights, updates)
@@ -163,12 +151,11 @@ def train_a2c(
         weights = base_agent._weights
 
         for p in range(players_per_game):
-            observations, keep_actions, cat_actions, rewards = zip(*trajectories[p])
+            observations, actions, rewards = zip(*trajectories[p])
             assert sum(rewards) == scores[p].total_score()
 
             observations = np.stack(observations, axis=0)
-            keep_actions = np.array(keep_actions, dtype=np.int32)
-            cat_actions = np.array(cat_actions, dtype=np.int32)
+            actions = np.array(actions, dtype=np.int32)
             rewards = np.array(rewards, dtype=np.float32) / REWARD_NORM
 
             logger.debug(" rewards {}: {}", p, rewards)
@@ -180,12 +167,11 @@ def train_a2c(
                 weights,
                 opt_state,
                 observations,
-                keep_actions,
-                cat_actions,
+                actions,
                 rewards,
             )
 
-            loss_components = loss_fn(weights, observations, keep_actions, cat_actions, rewards)
+            loss_components = loss_fn(weights, observations, actions, rewards)
             loss_components = [float(k) for k in loss_components]
 
             epoch_stats = dict(

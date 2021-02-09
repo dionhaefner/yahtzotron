@@ -32,8 +32,6 @@ def create_network(objective, num_dice, num_categories):
             1,  # opponent value
         )
 
-    keep_action_space = 2 ** num_dice
-
     def network(inputs):
         player_scorecard_idx = slice(sum(input_shapes[:2]), sum(input_shapes[:3]))
         init = hk.initializers.VarianceScaling(2.0, "fan_in", "truncated_normal")
@@ -45,10 +43,6 @@ def create_network(objective, num_dice, num_categories):
 
         out_value = hk.Linear(1)(x)
 
-        dice_encoding = hk.Linear(num_dice, w_init=init)(x)
-        dice_encoding = jax.nn.relu(dice_encoding)
-        out_keep = hk.Linear(keep_action_space)(dice_encoding)
-
         out_category = hk.Linear(num_categories)(x)
         out_category = jnp.where(
             # disallow already filled categories
@@ -57,7 +51,7 @@ def create_network(objective, num_dice, num_categories):
             out_category,
         )
 
-        return out_keep, out_category, jnp.squeeze(out_value, axis=-1)
+        return out_category, jnp.squeeze(out_value, axis=-1)
 
     forward = hk.without_apply_rng(hk.transform(network))
     return forward, input_shapes
@@ -107,7 +101,7 @@ def play_turn(
             net_input = assemble_network_inputs(
                 rolls_left, dice_count, player_scorecard_arr, opponent_value
             )
-            keep_action, category_idx = get_action_greedy(
+            category_idx = get_action_greedy(
                 rolls_left, current_dice, player_scorecard, roll_lut
             )
             value = None
@@ -122,7 +116,10 @@ def play_turn(
             )
 
         if rolls_left > 0:
-            dice_to_keep = np.unpackbits(np.uint8(keep_action), count=num_dice, bitorder='little')
+            dice_to_keep = max(
+                roll_lut["full"][current_dice][category_idx].keys(),
+                key=lambda k: roll_lut["full"][current_dice][category_idx][k],
+            )
         else:
             dice_to_keep = (1,) * num_dice
 
@@ -134,7 +131,6 @@ def play_turn(
         yield dict(
             rolls_left=rolls_left,
             net_input=net_input,
-            keep_action=keep_action,
             category_idx=category_idx,
             value=value,
             dice_count=dice_count,
@@ -182,11 +178,10 @@ def get_action(
     network_inputs = assemble_network_inputs(
         rolls_left, dice_count, player_scorecard, opponent_value
     )
-    keep_logits, category_logits, value = network(weights, network_inputs)
-    keep_action = choose_from_logits(keep_logits)
+    category_logits, value = network(weights, network_inputs)
     category_action = choose_from_logits(category_logits)
 
-    return network_inputs, keep_action, category_action, value
+    return network_inputs, category_action, value
 
 
 def get_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
@@ -213,17 +208,7 @@ def get_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
         for c in range(num_categories)
     ]
     category_action = np.argmax(expected_payoff)
-
-    if rolls_left > 0:
-        dice_to_keep = max(
-            roll_lut["full"][current_dice][category_action].keys(),
-            key=lambda k: roll_lut["full"][current_dice][category_action][k],
-        )
-    else:
-        dice_to_keep = (1,) * num_dice
-
-    keep_action = int(np.packbits(dice_to_keep, bitorder='little'))
-    return keep_action, category_action
+    return category_action
 
 
 class Yahtzotron:
@@ -286,16 +271,12 @@ class Yahtzotron:
                 ],
                 axis=0,
             )
-            _, _, opponent_values = self._network(self._weights, net_input)
-            # print(opponent_values)
+            _, opponent_values = self._network(self._weights, net_input)
             opponent_value = np.max(opponent_values)
         else:
             opponent_value = None
 
-        if greedy:
-            roll_lut = get_lut(self._roll_lut_path, self._ruleset)
-        else:
-            roll_lut = None
+        roll_lut = get_lut(self._roll_lut_path, self._ruleset)
 
         yield from play_turn(
             player_scorecard,
