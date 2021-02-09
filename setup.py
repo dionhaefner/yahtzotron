@@ -32,6 +32,7 @@ setup(
         "rlax",
         "optax",
         "tqdm",
+        "asciimatics",
     ],
     # CLI
     entry_points="""

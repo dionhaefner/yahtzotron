@@ -45,7 +45,7 @@ def create_network(objective, num_dice, num_categories):
 
         out_value = hk.Linear(1)(x)
 
-        dice_encoding = hk.Linear(num_dice)(x)
+        dice_encoding = hk.Linear(num_dice, w_init=init)(x)
         dice_encoding = jax.nn.relu(dice_encoding)
         out_keep = hk.Linear(keep_action_space)(dice_encoding)
 
@@ -287,6 +287,7 @@ class Yahtzotron:
                 axis=0,
             )
             _, _, opponent_values = self._network(self._weights, net_input)
+            # print(opponent_values)
             opponent_value = np.max(opponent_values)
         else:
             opponent_value = None
