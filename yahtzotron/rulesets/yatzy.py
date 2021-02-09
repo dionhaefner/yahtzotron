@@ -112,7 +112,7 @@ def chance(roll, filled_categories):
 
 
 @make_category
-def yahtzee(roll, filled_categories):
+def yatzy(roll, filled_categories):
     if 5 in roll:
         return 50
 
@@ -137,7 +137,7 @@ yatzy_rules = Ruleset(
         small_straight,
         large_straight,
         chance,
-        yahtzee,
+        yatzy,
     ),
     bonus_cutoff=63,
     bonus_score=50,

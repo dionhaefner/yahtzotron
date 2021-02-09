@@ -9,21 +9,18 @@ import jax.numpy as jnp
 import optax
 import rlax
 
-from yahtzotron.game import Scorecard
-from yahtzotron.play import print_score
+from yahtzotron.game import play_tournament
+from yahtzotron.interactive import print_score
 
 REWARD_NORM = 100
 WINNING_REWARD = 100
 
-
-def entropy_loss_fn(logits_t, w_t):
-    entropy_per_timestep = entropy_fn(logits_t)
-    return -jnp.mean(entropy_per_timestep * w_t)
+MINIMUM_LOGIT = -1e8
 
 
-def entropy_fn(logits):
+def entropy(logits):
     mask = jnp.isfinite(logits)
-    logits = jnp.where(mask, logits, -1e8)
+    logits = jnp.where(mask, logits, MINIMUM_LOGIT)
     probs = jax.nn.softmax(logits)
     logprobs = jax.nn.log_softmax(logits)
     return -jnp.sum(mask * probs * logprobs, axis=-1)
@@ -44,17 +41,18 @@ def clip_grads(grad_tree, max_norm):
 
 def cross_entropy(logits, actions):
     mask = jnp.isfinite(logits)
-    logprob = jax.nn.log_softmax(jnp.where(mask, logits, -1e8))
+    logprob = jax.nn.log_softmax(jnp.where(mask, logits, MINIMUM_LOGIT))
     labels = jax.nn.one_hot(actions, logits.shape[-1])
     return -jnp.sum(labels * mask * logprob, axis=1)
 
 
 def compile_loss_function(
-    type_, network, td_lambda=0.9, discount=0.99, policy_cost=0.25, entropy_cost=1e-3
+    type_, network, td_lambda=0.6, discount=0.99, policy_cost=0.25, entropy_cost=1e-3
 ):
-    def loss(weights, observations, actions, rewards):
+    def loss(weights, observations, keep_actions, cat_actions, rewards):
         """Actor-critic loss."""
-        logits, values = network(weights, observations)
+        rolls_left = observations[..., 0]
+        keep_logits, cat_logits, values = network(weights, observations)
         values = jnp.append(values, jnp.sum(rewards))
 
         td_errors = rlax.td_lambda(
@@ -66,17 +64,28 @@ def compile_loss_function(
         )
         critic_loss = jnp.mean(td_errors ** 2)
 
+        pertinent_mask = rolls_left == 0
+        pertinent_logits = jnp.where(
+            pertinent_mask.reshape(-1, 1),
+            jnp.pad(cat_logits, ((0, 0), (0, keep_logits.shape[1] - cat_logits.shape[1])), constant_values=-jnp.inf),
+            keep_logits
+        )
+        pertinent_actions = jnp.where(pertinent_mask, cat_actions, keep_actions)
+
         if type_ == "a2c":
             actor_loss = rlax.policy_gradient_loss(
-                logits_t=logits,
-                a_t=actions,
+                logits_t=pertinent_logits,
+                a_t=pertinent_actions,
                 adv_t=td_errors,
                 w_t=jnp.ones(td_errors.shape[0]),
             )
         elif type_ == "supervised":
-            actor_loss = jnp.mean(cross_entropy(logits, actions))
+            actor_loss = jnp.mean(cross_entropy(pertinent_logits, pertinent_actions))
 
-        entropy_loss = jnp.mean(entropy_loss_fn(logits, jnp.ones(logits.shape[0])))
+        entropy_loss = -(
+            jnp.mean(entropy(keep_logits))
+            + jnp.mean(entropy(cat_logits))
+        )
 
         return policy_cost * actor_loss, critic_loss, entropy_cost * entropy_loss
 
@@ -84,10 +93,10 @@ def compile_loss_function(
 
 
 def compile_sgd_step(loss, network, optimizer, max_gradient_norm=0.5):
-    def sgd_step(weights, opt_state, observations, cat_actions, rewards):
+    def sgd_step(weights, opt_state, observations, keep_actions, cat_actions, rewards):
         """Does a step of SGD over a trajectory."""
         total_loss = lambda *args: sum(loss(*args))
-        gradients = jax.grad(total_loss)(weights, observations, cat_actions, rewards)
+        gradients = jax.grad(total_loss)(weights, observations, keep_actions, cat_actions, rewards)
         gradients = clip_grads(gradients, max_gradient_norm)
         updates, opt_state = optimizer.update(gradients, opt_state)
         weights = optax.apply_updates(weights, updates)
@@ -96,137 +105,117 @@ def compile_sgd_step(loss, network, optimizer, max_gradient_norm=0.5):
     return jax.jit(sgd_step)
 
 
-def play_tournament(model, players_per_game, pretrain=False):
-    ruleset = model._ruleset
-    scores = [Scorecard(ruleset) for _ in range(players_per_game)]
-    trajectories = [[] for _ in range(players_per_game)]
-    player_values = [-float("inf")] * players_per_game
-
-    for t in range(ruleset.num_rounds):
-        for p in range(players_per_game):
-            my_score = scores[p]
-
-            player_values[p] = -float("inf")
-            strongest_opponent = scores[np.argmax(player_values)]
-
-            turn_iter = model.turn(my_score, strongest_opponent, pretrain=pretrain)
-            for turn_state in turn_iter:
-                if turn_state["rolls_left"] == 0:
-                    player_values[p] = float(turn_state["value"])
-                    reward = scores[p].register_score(
-                        turn_state["dice_count"], turn_state["category_idx"]
-                    )
-                else:
-                    reward = 0
-
-                trajectories[p].append(
-                    (turn_state["net_input"], turn_state["category_idx"], reward)
-                )
-
-    return scores, trajectories, player_values
-
-
 def train_a2c(
-    model,
+    base_agent,
     num_epochs,
     checkpoint_path=None,
     players_per_game=4,
     learning_rate=1e-3,
-    pretrain=False,
+    entropy_cost=1e-3,
+    pretraining=False,
 ):
-    """Train model through self-play"""
-    objective = model._objective
+    """Train advantage actor-critic (A2C) agent through self-play"""
+    objective = base_agent._objective
 
     optimizer = optax.MultiSteps(
         optax.adam(learning_rate), players_per_game, use_grad_mean=False
     )
-    opt_state = optimizer.init(model.get_weights())
+    opt_state = optimizer.init(base_agent.get_weights())
 
     running_stats = defaultdict(lambda: deque(maxlen=1000))
     progress = tqdm.tqdm(range(num_epochs), dynamic_ncols=True)
 
-    loss_type = "supervised" if pretrain else "a2c"
-    loss_fn = compile_loss_function(loss_type, model._net)
-    sgd_step = compile_sgd_step(loss_fn, model._net, optimizer)
+    loss_type = "supervised" if pretraining else "a2c"
+    loss_fn = compile_loss_function(
+        loss_type, base_agent._network, entropy_cost=entropy_cost
+    )
+    sgd_step = compile_sgd_step(loss_fn, base_agent._network, optimizer)
 
     best_score = -float("inf")
 
-    try:
-        for i in progress:
-            scores, trajectories, player_values = play_tournament(
-                model, players_per_game, pretrain
+    if pretraining:
+        greedy_agent = base_agent.clone()
+        greedy_agent._default_greedy = True
+        agents = [greedy_agent] * players_per_game
+    else:
+        agents = [base_agent] * players_per_game
+
+    for i in progress:
+        scores, trajectories = play_tournament(
+            agents,
+            record_trajectories=True,
+            deterministic_rolls=False if pretraining else True,
+        )
+
+        final_scores = [s.total_score() for s in scores]
+        winner = np.argmax(final_scores)
+        logger.info(
+            "Player {} won with a score of {} (median {})",
+            winner,
+            final_scores[winner],
+            np.median(final_scores),
+        )
+        logger.info(
+            " Winning scorecard:\n{}",
+            print_score(scores[winner]),
+        )
+
+        weights = base_agent._weights
+
+        for p in range(players_per_game):
+            observations, keep_actions, cat_actions, rewards = zip(*trajectories[p])
+            assert sum(rewards) == scores[p].total_score()
+
+            observations = np.stack(observations, axis=0)
+            keep_actions = np.array(keep_actions, dtype=np.int32)
+            cat_actions = np.array(cat_actions, dtype=np.int32)
+            rewards = np.array(rewards, dtype=np.float32) / REWARD_NORM
+
+            logger.debug(" rewards {}: {}", p, rewards)
+
+            if objective == "win" and p == winner:
+                rewards[-1] += WINNING_REWARD / REWARD_NORM
+
+            weights, opt_state = sgd_step(
+                weights,
+                opt_state,
+                observations,
+                keep_actions,
+                cat_actions,
+                rewards,
             )
 
-            final_scores = [s.total_score() for s in scores]
-            winner = np.argmax(final_scores)
-            logger.info(
-                "Player {} won with a score of {} (median {})",
-                winner,
-                final_scores[winner],
-                np.median(final_scores),
+            loss_components = loss_fn(weights, observations, keep_actions, cat_actions, rewards)
+            loss_components = [float(k) for k in loss_components]
+
+            epoch_stats = dict(
+                actor_loss=loss_components[0],
+                critic_loss=loss_components[1],
+                entropy_loss=loss_components[2],
+                loss=sum(loss_components),
+                score=scores[p].total_score(),
             )
-            logger.info(
-                " Winning scorecard:\n{}",
-                print_score(scores[winner]),
+            for key, val in epoch_stats.items():
+                buf = running_stats[key]
+                if len(buf) == buf.maxlen:
+                    buf.popleft()
+                buf.append(val)
+
+        base_agent.set_weights(weights)
+
+        if i % 10 == 0:
+            avg_score = np.mean(running_stats["score"])
+            if avg_score > best_score + 1 and i > running_stats["score"].maxlen:
+                best_score = avg_score
+
+                if checkpoint_path is not None:
+                    logger.warning(
+                        " Saving checkpoint for average score {:.2f}", avg_score
+                    )
+                    base_agent.save(checkpoint_path)
+
+            progress.set_postfix(
+                {key: np.mean(val) for key, val in running_stats.items()}
             )
 
-            weights = model._weights
-
-            for p in range(players_per_game):
-                observations, actions, rewards = zip(*trajectories[p])
-                assert sum(rewards) == scores[p].total_score()
-
-                observations = np.stack(observations, axis=0)
-                actions = np.array(actions, dtype=np.int32)
-                rewards = np.array(rewards, dtype=np.float32) / REWARD_NORM
-
-                logger.debug(" rewards {}: {}", p, rewards)
-
-                if objective == "win" and p == winner:
-                    rewards[-1] += WINNING_REWARD / REWARD_NORM
-
-                weights, opt_state = sgd_step(
-                    weights,
-                    opt_state,
-                    observations,
-                    actions,
-                    rewards,
-                )
-
-                loss_components = loss_fn(weights, observations, actions, rewards)
-                loss_components = [float(k) for k in loss_components]
-
-                epoch_stats = dict(
-                    actor_loss=loss_components[0],
-                    critic_loss=loss_components[1],
-                    entropy_loss=loss_components[2],
-                    loss=sum(loss_components),
-                    score=scores[p].total_score(),
-                )
-                for key, val in epoch_stats.items():
-                    buf = running_stats[key]
-                    if len(buf) == buf.maxlen:
-                        buf.popleft()
-                    buf.append(val)
-
-            model.set_weights(weights)
-
-            if i % 10 == 0:
-                avg_score = np.mean(running_stats["score"])
-                if avg_score > best_score + 1 and i > running_stats["score"].maxlen:
-                    best_score = avg_score
-
-                    if checkpoint_path is not None:
-                        logger.warning(
-                            " Saving checkpoint for average score {:.2f}", avg_score
-                        )
-                        model.save(checkpoint_path)
-
-                progress.set_postfix(
-                    {key: np.mean(val) for key, val in running_stats.items()}
-                )
-
-    except KeyboardInterrupt:
-        pass
-
-    return model
+    return base_agent

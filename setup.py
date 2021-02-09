@@ -27,7 +27,11 @@ setup(
         "click",
         "numpy",
         "loguru",
-        "tensorflow>=2",
+        "jax",
+        "dm-haiku",
+        "rlax",
+        "optax",
+        "tqdm",
     ],
     # CLI
     entry_points="""
