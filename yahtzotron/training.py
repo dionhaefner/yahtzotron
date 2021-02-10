@@ -15,15 +15,12 @@ from yahtzotron.interactive import print_score
 REWARD_NORM = 100
 WINNING_REWARD = 100
 
-MINIMUM_LOGIT = -1e8
-
 
 def entropy(logits):
-    mask = jnp.isfinite(logits)
-    logits = jnp.where(mask, logits, MINIMUM_LOGIT)
+    logits = jnp.maximum(logits, 1e-6 * logits.max())
     probs = jax.nn.softmax(logits)
     logprobs = jax.nn.log_softmax(logits)
-    return -jnp.sum(mask * probs * logprobs, axis=-1)
+    return -jnp.sum(probs * logprobs, axis=-1)
 
 
 def l2_norm(tree):
@@ -40,10 +37,10 @@ def clip_grads(grad_tree, max_norm):
 
 
 def cross_entropy(logits, actions):
-    mask = jnp.isfinite(logits)
-    logprob = jax.nn.log_softmax(jnp.where(mask, logits, MINIMUM_LOGIT))
+    logits = jnp.maximum(logits, 1e-6 * logits.max())
+    logprob = jax.nn.log_softmax(logits)
     labels = jax.nn.one_hot(actions, logits.shape[-1])
-    return -jnp.sum(labels * mask * logprob, axis=1)
+    return -jnp.sum(labels * logprob, axis=1)
 
 
 def compile_loss_function(
