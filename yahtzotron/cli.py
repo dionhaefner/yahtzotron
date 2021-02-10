@@ -60,7 +60,12 @@ def train(out, ruleset, num_epochs, no_restore, objective):
 
     stage_1_epochs = round(0.6 * num_epochs)
     deterministic_rolls = True if objective == "win" else False
-    yzt = train_a2c(yzt, num_epochs=stage_1_epochs, checkpoint_path=out, deterministic_rolls=deterministic_rolls)
+    yzt = train_a2c(
+        yzt,
+        num_epochs=stage_1_epochs,
+        checkpoint_path=out,
+        deterministic_rolls=deterministic_rolls,
+    )
     yzt = train_a2c(
         yzt,
         num_epochs=num_epochs - stage_1_epochs,
@@ -80,6 +85,7 @@ def play(model_path, skip_intro):
 
     if not skip_intro:
         from yahtzotron.eyecandy import play_intro
+
         play_intro()
 
     play_interactive(model_path)

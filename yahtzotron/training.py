@@ -105,9 +105,7 @@ def train_a2c(
     """Train advantage actor-critic (A2C) agent through self-play"""
     objective = base_agent._objective
 
-    optimizer = optax.MultiSteps(
-        optax.adam(learning_rate), players_per_game
-    )
+    optimizer = optax.MultiSteps(optax.adam(learning_rate), players_per_game)
     opt_state = optimizer.init(base_agent.get_weights())
 
     running_stats = defaultdict(lambda: deque(maxlen=1000))

@@ -266,7 +266,7 @@ class Yahtzotron:
 
             net_input = np.stack(
                 [
-                    assemble_network_inputs(2, np.zeros(6), o.to_array(), 0.)
+                    assemble_network_inputs(2, np.zeros(6), o.to_array(), 0.0)
                     for o in opponent_scorecards
                 ],
                 axis=0,
