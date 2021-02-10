@@ -59,7 +59,8 @@ def train(out, ruleset, num_epochs, no_restore, objective):
         yzt = train_a2c(yzt, num_epochs=10000, pretraining=True, learning_rate=5e-3)
 
     stage_1_epochs = round(0.6 * num_epochs)
-    yzt = train_a2c(yzt, num_epochs=stage_1_epochs, checkpoint_path=out)
+    deterministic_rolls = True if objective == "win" else False
+    yzt = train_a2c(yzt, num_epochs=stage_1_epochs, checkpoint_path=out, deterministic_rolls=deterministic_rolls)
     yzt = train_a2c(
         yzt,
         num_epochs=num_epochs - stage_1_epochs,
@@ -109,19 +110,21 @@ def evaluate(agent, num_rounds, ruleset):
     scores_per_agent = [[] for _ in agent]
     rank_per_agent = [[] for _ in agent]
 
-    progress = tqdm.tqdm(range(num_rounds))
-    for _ in progress:
-        agents = [create_agent(agent_id) for agent_id in agent]
-        scorecards = play_tournament(agents, deterministic_rolls=True)
-        sorted_scores = sorted(
-            enumerate([s.total_score() for s in scorecards]),
-            key=lambda args: args[1],
-            reverse=True,
-        )
+    try:
+        progress = tqdm.tqdm(range(num_rounds))
+        for _ in progress:
+            agents = [create_agent(agent_id) for agent_id in agent]
+            scorecards = play_tournament(agents)
+            total_scores = [s.total_score() for s in scorecards]
+            sorted_scores = sorted(total_scores, reverse=True)
 
-        for rank, (i, score) in enumerate(sorted_scores, 1):
-            scores_per_agent[i].append(score)
-            rank_per_agent[i].append(rank)
+            for i, score in enumerate(total_scores):
+                scores_per_agent[i].append(score)
+                # use .index to handle ties correctly
+                rank_per_agent[i].append(sorted_scores.index(score) + 1)
+
+    except KeyboardInterrupt:
+        pass
 
     for i, agent_id in enumerate(agent):
         agent_scores = np.asarray(scores_per_agent[i])

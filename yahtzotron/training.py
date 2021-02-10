@@ -15,15 +15,11 @@ from yahtzotron.interactive import print_score
 REWARD_NORM = 100
 WINNING_REWARD = 100
 
-MINIMUM_LOGIT = -1e8
-
 
 def entropy(logits):
-    mask = jnp.isfinite(logits)
-    logits = jnp.where(mask, logits, MINIMUM_LOGIT)
     probs = jax.nn.softmax(logits)
     logprobs = jax.nn.log_softmax(logits)
-    return -jnp.sum(mask * probs * logprobs, axis=-1)
+    return -jnp.sum(probs * logprobs, axis=-1)
 
 
 def l2_norm(tree):
@@ -40,10 +36,9 @@ def clip_grads(grad_tree, max_norm):
 
 
 def cross_entropy(logits, actions):
-    mask = jnp.isfinite(logits)
-    logprob = jax.nn.log_softmax(jnp.where(mask, logits, MINIMUM_LOGIT))
+    logprob = jax.nn.log_softmax(logits)
     labels = jax.nn.one_hot(actions, logits.shape[-1])
-    return -jnp.sum(labels * mask * logprob, axis=1)
+    return -jnp.sum(labels * logprob, axis=-1)
 
 
 def compile_loss_function(
@@ -54,6 +49,9 @@ def compile_loss_function(
         logits, values = network(weights, observations)
         values = jnp.append(values, jnp.sum(rewards))
 
+        # taper -inf values with very small finite logits
+        logits = jnp.maximum(logits, 1e-6 * jnp.max(logits, axis=-1).reshape(-1, 1))
+
         td_errors = rlax.td_lambda(
             v_tm1=values[:-1],
             r_t=rewards,
@@ -61,6 +59,7 @@ def compile_loss_function(
             v_t=values[1:],
             lambda_=jnp.array(td_lambda),
         )
+
         critic_loss = jnp.mean(td_errors ** 2)
 
         if type_ == "a2c":
@@ -101,12 +100,13 @@ def train_a2c(
     learning_rate=1e-3,
     entropy_cost=1e-3,
     pretraining=False,
+    deterministic_rolls=False,
 ):
     """Train advantage actor-critic (A2C) agent through self-play"""
     objective = base_agent._objective
 
     optimizer = optax.MultiSteps(
-        optax.adam(learning_rate), players_per_game, use_grad_mean=False
+        optax.adam(learning_rate), players_per_game
     )
     opt_state = optimizer.init(base_agent.get_weights())
 
@@ -132,7 +132,7 @@ def train_a2c(
         scores, trajectories = play_tournament(
             agents,
             record_trajectories=True,
-            deterministic_rolls=False if pretraining else True,
+            deterministic_rolls=deterministic_rolls,
         )
 
         final_scores = [s.total_score() for s in scores]
