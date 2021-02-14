@@ -44,10 +44,7 @@ def create_network(objective, num_dice, num_categories):
         x = jax.nn.relu(x)
 
         out_value = hk.Linear(1)(x)
-
-        dice_encoding = hk.Linear(num_dice)(x)
-        dice_encoding = jax.nn.sigmoid(dice_encoding)
-        out_keep = hk.Linear(keep_action_space)(dice_encoding)
+        out_keep = hk.Linear(keep_action_space)(x)
 
         out_category = hk.Linear(num_categories)(x)
         out_category = jnp.where(
@@ -122,7 +119,9 @@ def play_turn(
             )
 
         if rolls_left > 0:
-            dice_to_keep = np.unpackbits(np.uint8(keep_action), count=num_dice, bitorder='little')
+            dice_to_keep = np.unpackbits(
+                np.uint8(keep_action), count=num_dice, bitorder="little"
+            )
         else:
             dice_to_keep = (1,) * num_dice
 
@@ -222,7 +221,7 @@ def get_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
     else:
         dice_to_keep = (1,) * num_dice
 
-    keep_action = int(np.packbits(dice_to_keep, bitorder='little'))
+    keep_action = int(np.packbits(dice_to_keep, bitorder="little"))
     return keep_action, category_action
 
 

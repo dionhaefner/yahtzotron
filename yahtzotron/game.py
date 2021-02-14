@@ -1,4 +1,3 @@
-from copy import deepcopy
 import numpy as np
 
 
@@ -68,8 +67,6 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
         trajectories = [[] for _ in range(num_players)]
 
     for t in range(ruleset.num_rounds):
-        frozen_scores = deepcopy(scores)
-
         if deterministic_rolls:
             rng_seed = np.random.randint(int(1e10))
         else:
@@ -78,8 +75,8 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
         for p in range(num_players):
             rng = np.random.default_rng(rng_seed)
 
-            my_score = frozen_scores[p]
-            other_scores = [frozen_scores[i] for i in range(num_players) if i != p]
+            my_score = scores[p]
+            other_scores = [scores[i] for i in range(num_players) if i != p]
 
             turn_iter = agents[p].turn(my_score, other_scores)
             for turn_state in turn_iter:
@@ -96,7 +93,12 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
 
                 if record_trajectories:
                     trajectories[p].append(
-                        (turn_state["net_input"], turn_state["keep_action"], turn_state["category_idx"], reward)
+                        (
+                            turn_state["net_input"],
+                            turn_state["keep_action"],
+                            turn_state["category_idx"],
+                            reward,
+                        )
                     )
 
     if record_trajectories:

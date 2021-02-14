@@ -79,18 +79,20 @@ def play(model_path, skip_intro):
 
     if not skip_intro:
         from yahtzotron.eyecandy import play_intro
+
         play_intro()
 
     play_interactive(model_path)
 
 
 @cli.command("evaluate")
-@click.option("-a", "--agent", multiple=True, required=True)
+@click.argument("AGENTS", nargs=-1, required=True)
 @click.option("-n", "--num-rounds", type=click.IntRange(min=0), default=1000)
 @click.option(
     "--ruleset", type=click.Choice(list(AVAILABLE_RULESETS.keys())), default="yatzy"
 )
-def evaluate(agent, num_rounds, ruleset):
+@click.option("--deterministic-rolls", is_flag=True, default=False)
+def evaluate(agents, num_rounds, ruleset, deterministic_rolls):
     import tqdm
     import numpy as np
 
@@ -106,24 +108,30 @@ def evaluate(agent, num_rounds, ruleset):
 
         return Yahtzotron(ruleset, load_path=agent_id)
 
-    scores_per_agent = [[] for _ in agent]
-    rank_per_agent = [[] for _ in agent]
+    scores_per_agent = [[] for _ in agents]
+    rank_per_agent = [[] for _ in agents]
 
-    progress = tqdm.tqdm(range(num_rounds))
-    for _ in progress:
-        agents = [create_agent(agent_id) for agent_id in agent]
-        scorecards = play_tournament(agents, deterministic_rolls=True)
-        sorted_scores = sorted(
-            enumerate([s.total_score() for s in scorecards]),
-            key=lambda args: args[1],
-            reverse=True,
-        )
+    try:
+        progress = tqdm.tqdm(range(num_rounds))
+        for _ in progress:
+            agent_obj = [create_agent(agent_id) for agent_id in agents]
+            scorecards = play_tournament(
+                agent_obj, deterministic_rolls=deterministic_rolls
+            )
+            sorted_scores = sorted(
+                enumerate([s.total_score() for s in scorecards]),
+                key=lambda args: args[1],
+                reverse=True,
+            )
 
-        for rank, (i, score) in enumerate(sorted_scores, 1):
-            scores_per_agent[i].append(score)
-            rank_per_agent[i].append(rank)
+            for rank, (i, score) in enumerate(sorted_scores, 1):
+                scores_per_agent[i].append(score)
+                rank_per_agent[i].append(rank)
 
-    for i, agent_id in enumerate(agent):
+    except KeyboardInterrupt:
+        pass
+
+    for i, agent_id in enumerate(agents):
         agent_scores = np.asarray(scores_per_agent[i])
         agent_ranks = np.asarray(rank_per_agent[i])
         agent_rank_count = dict(zip(*np.unique(agent_ranks, return_counts=True)))
@@ -135,7 +143,7 @@ def evaluate(agent, num_rounds, ruleset):
             [
                 f' Rank {k} | {"█" * math.ceil(20 * agent_rank_count.get(k, 0) / num_rounds)} '
                 f"{agent_rank_count.get(k, 0)}"
-                for k in range(1, len(agent) + 1)
+                for k in range(1, len(agents) + 1)
             ]
         )
         summary.append(" ---")

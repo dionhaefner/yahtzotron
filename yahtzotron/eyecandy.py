@@ -168,7 +168,13 @@ __ ||______|| __|
                 clear=True,
             ),
             Print(
-                screen, SpeechBubble("T O . . . R O L L"), x=15, y=13, start_frame=150, clear=True, speed=1
+                screen,
+                SpeechBubble("T O . . . R O L L"),
+                x=15,
+                y=13,
+                start_frame=150,
+                clear=True,
+                speed=1,
             ),
         ]
         scenes.append(Scene(effects, 200))

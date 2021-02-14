@@ -15,38 +15,33 @@ from yahtzotron.interactive import print_score
 REWARD_NORM = 100
 WINNING_REWARD = 100
 
+MINIMUM_LOGIT = jnp.finfo(jnp.float32).min
+
 
 def entropy(logits):
-    logits = jnp.maximum(logits, 1e-6 * logits.max())
     probs = jax.nn.softmax(logits)
     logprobs = jax.nn.log_softmax(logits)
     return -jnp.sum(probs * logprobs, axis=-1)
 
 
-def l2_norm(tree):
-    """Compute the l2 norm of a pytree of arrays. Useful for weight decay."""
-    leaves, _ = jax.tree_util.tree_flatten(tree)
-    return jnp.sqrt(sum(jnp.vdot(x, x) for x in leaves))
-
-
-def clip_grads(grad_tree, max_norm):
-    """Clip gradients stored as a pytree of arrays to maximum norm `max_norm`."""
-    norm = l2_norm(grad_tree)
-    normalize = lambda g: jnp.where(norm < max_norm, g, g * (max_norm / norm))
-    return jax.tree_util.tree_map(normalize, grad_tree)
-
-
 def cross_entropy(logits, actions):
-    logits = jnp.maximum(logits, 1e-6 * logits.max())
     logprob = jax.nn.log_softmax(logits)
     labels = jax.nn.one_hot(actions, logits.shape[-1])
     return -jnp.sum(labels * logprob, axis=1)
 
 
-def compile_loss_function(
-    type_, network, td_lambda=0.6, discount=0.99, policy_cost=0.25, entropy_cost=1e-3
-):
-    def loss(weights, observations, keep_actions, cat_actions, rewards):
+def compile_loss_function(type_, network):
+    def loss(
+        weights,
+        observations,
+        keep_actions,
+        cat_actions,
+        rewards,
+        td_lambda=0.2,
+        discount=0.99,
+        policy_cost=0.25,
+        entropy_cost=1e-3,
+    ):
         """Actor-critic loss."""
         rolls_left = observations[..., 0]
         keep_logits, cat_logits, values = network(weights, observations)
@@ -57,16 +52,24 @@ def compile_loss_function(
             r_t=rewards,
             discount_t=jnp.full_like(rewards, discount),
             v_t=values[1:],
-            lambda_=jnp.array(td_lambda),
+            lambda_=td_lambda,
         )
         critic_loss = jnp.mean(td_errors ** 2)
 
+        def pad_logit(logit, num_pad):
+            return jnp.pad(logit, [(0, 0), (0, num_pad)], constant_values=MINIMUM_LOGIT)
+
+        logit_shapediff = cat_logits.shape[1] - keep_logits.shape[1]
+        if logit_shapediff > 0:
+            keep_logits = pad_logit(keep_logits, logit_shapediff)
+        elif logit_shapediff < 0:
+            cat_logits = pad_logit(cat_logits, -logit_shapediff)
+
         pertinent_mask = rolls_left == 0
         pertinent_logits = jnp.where(
-            pertinent_mask.reshape(-1, 1),
-            jnp.pad(cat_logits, ((0, 0), (0, keep_logits.shape[1] - cat_logits.shape[1])), constant_values=-jnp.inf),
-            keep_logits
+            pertinent_mask.reshape(-1, 1), cat_logits, keep_logits
         )
+        pertinent_logits = jnp.maximum(pertinent_logits, MINIMUM_LOGIT)
         pertinent_actions = jnp.where(pertinent_mask, cat_actions, keep_actions)
 
         if type_ == "a2c":
@@ -86,12 +89,21 @@ def compile_loss_function(
     return jax.jit(loss)
 
 
-def compile_sgd_step(loss, network, optimizer, max_gradient_norm=0.5):
-    def sgd_step(weights, opt_state, observations, keep_actions, cat_actions, rewards):
+def compile_sgd_step(loss_func, optimizer):
+    def sgd_step(
+        weights,
+        opt_state,
+        observations,
+        keep_actions,
+        cat_actions,
+        rewards,
+        **loss_kwargs
+    ):
         """Does a step of SGD over a trajectory."""
-        total_loss = lambda *args: sum(loss(*args))
-        gradients = jax.grad(total_loss)(weights, observations, keep_actions, cat_actions, rewards)
-        gradients = clip_grads(gradients, max_gradient_norm)
+        total_loss = lambda *args: sum(loss_func(*args, **loss_kwargs))
+        gradients = jax.grad(total_loss)(
+            weights, observations, keep_actions, cat_actions, rewards
+        )
         updates, opt_state = optimizer.update(gradients, opt_state)
         weights = optax.apply_updates(weights, updates)
         return weights, opt_state
@@ -120,10 +132,9 @@ def train_a2c(
     progress = tqdm.tqdm(range(num_epochs), dynamic_ncols=True)
 
     loss_type = "supervised" if pretraining else "a2c"
-    loss_fn = compile_loss_function(
-        loss_type, base_agent._network, entropy_cost=entropy_cost
-    )
-    sgd_step = compile_sgd_step(loss_fn, base_agent._network, optimizer)
+    loss_fn = compile_loss_function(loss_type, base_agent._network)
+    loss_kwargs = dict(entropy_cost=entropy_cost)
+    sgd_step = compile_sgd_step(loss_fn, optimizer)
 
     best_score = -float("inf")
 
@@ -135,11 +146,7 @@ def train_a2c(
         agents = [base_agent] * players_per_game
 
     for i in progress:
-        scores, trajectories = play_tournament(
-            agents,
-            record_trajectories=True,
-            deterministic_rolls=False if pretraining else True,
-        )
+        scores, trajectories = play_tournament(agents, record_trajectories=True)
 
         final_scores = [s.total_score() for s in scores]
         winner = np.argmax(final_scores)
@@ -177,9 +184,12 @@ def train_a2c(
                 keep_actions,
                 cat_actions,
                 rewards,
+                **loss_kwargs
             )
 
-            loss_components = loss_fn(weights, observations, keep_actions, cat_actions, rewards)
+            loss_components = loss_fn(
+                weights, observations, keep_actions, cat_actions, rewards, **loss_kwargs
+            )
             loss_components = [float(k) for k in loss_components]
 
             epoch_stats = dict(
@@ -196,6 +206,9 @@ def train_a2c(
                 buf.append(val)
 
         base_agent.set_weights(weights)
+
+        if pretraining:
+            greedy_agent.set_weights(weights)
 
         if i % 10 == 0:
             avg_score = np.mean(running_stats["score"])
