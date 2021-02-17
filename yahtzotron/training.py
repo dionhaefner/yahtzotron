@@ -34,8 +34,7 @@ def compile_loss_function(type_, network):
     def loss(
         weights,
         observations,
-        keep_actions,
-        cat_actions,
+        actions,
         rewards,
         td_lambda=0.2,
         discount=0.99,
@@ -43,9 +42,11 @@ def compile_loss_function(type_, network):
         entropy_cost=1e-3,
     ):
         """Actor-critic loss."""
-        rolls_left = observations[..., 0]
-        keep_logits, cat_logits, values = network(weights, observations)
+        logits, values = network(weights, observations)
         values = jnp.append(values, jnp.sum(rewards))
+
+        # replace -inf values by tiny finite value
+        logits = jnp.maximum(logits, MINIMUM_LOGIT)
 
         td_errors = rlax.td_lambda(
             v_tm1=values[:-1],
@@ -56,33 +57,17 @@ def compile_loss_function(type_, network):
         )
         critic_loss = jnp.mean(td_errors ** 2)
 
-        def pad_logit(logit, num_pad):
-            return jnp.pad(logit, [(0, 0), (0, num_pad)], constant_values=MINIMUM_LOGIT)
-
-        logit_shapediff = cat_logits.shape[1] - keep_logits.shape[1]
-        if logit_shapediff > 0:
-            keep_logits = pad_logit(keep_logits, logit_shapediff)
-        elif logit_shapediff < 0:
-            cat_logits = pad_logit(cat_logits, -logit_shapediff)
-
-        pertinent_mask = rolls_left == 0
-        pertinent_logits = jnp.where(
-            pertinent_mask.reshape(-1, 1), cat_logits, keep_logits
-        )
-        pertinent_logits = jnp.maximum(pertinent_logits, MINIMUM_LOGIT)
-        pertinent_actions = jnp.where(pertinent_mask, cat_actions, keep_actions)
-
         if type_ == "a2c":
             actor_loss = rlax.policy_gradient_loss(
-                logits_t=pertinent_logits,
-                a_t=pertinent_actions,
+                logits_t=logits,
+                a_t=actions,
                 adv_t=td_errors,
                 w_t=jnp.ones(td_errors.shape[0]),
             )
         elif type_ == "supervised":
-            actor_loss = jnp.mean(cross_entropy(pertinent_logits, pertinent_actions))
+            actor_loss = jnp.mean(cross_entropy(logits, actions))
 
-        entropy_loss = -jnp.mean(entropy(pertinent_logits))
+        entropy_loss = -jnp.mean(entropy(logits))
 
         return policy_cost * actor_loss, critic_loss, entropy_cost * entropy_loss
 
@@ -94,15 +79,14 @@ def compile_sgd_step(loss_func, optimizer):
         weights,
         opt_state,
         observations,
-        keep_actions,
-        cat_actions,
+        actions,
         rewards,
         **loss_kwargs
     ):
         """Does a step of SGD over a trajectory."""
         total_loss = lambda *args: sum(loss_func(*args, **loss_kwargs))
         gradients = jax.grad(total_loss)(
-            weights, observations, keep_actions, cat_actions, rewards
+            weights, observations, actions, rewards
         )
         updates, opt_state = optimizer.update(gradients, opt_state)
         weights = optax.apply_updates(weights, updates)
@@ -111,20 +95,48 @@ def compile_sgd_step(loss_func, optimizer):
     return jax.jit(sgd_step)
 
 
+def get_default_schedules(pretraining=False):
+    if pretraining:
+        return dict(
+            learning_rate=optax.constant_schedule(5e-3),
+            entropy=optax.constant_schedule(1e-3),
+            td_lambda=optax.constant_schedule(0.2),
+        )
+
+    return dict(
+        learning_rate=optax.exponential_decay(1e-3, 60_000, decay_rate=0.2),
+        entropy=optax.exponential_decay(1e-3, 10_000, decay_rate=0.1, transition_begin=60_000),
+        td_lambda=optax.polynomial_schedule(0.2, 0.8, power=1, transition_steps=60_000),
+    )
+
+
 def train_a2c(
     base_agent,
     num_epochs,
     checkpoint_path=None,
     players_per_game=4,
-    learning_rate=1e-3,
-    entropy_cost=1e-3,
+    lr_schedule=None,
+    entropy_schedule=None,
+    td_lambda_schedule=None,
     pretraining=False,
 ):
     """Train advantage actor-critic (A2C) agent through self-play"""
     objective = base_agent._objective
 
+    default_schedules = get_default_schedules(pretraining=pretraining)
+
+    if lr_schedule is None:
+        lr_schedule = default_schedules["learning_rate"]
+
+    if entropy_schedule is None:
+        entropy_schedule = default_schedules["entropy"]
+
+    if td_lambda_schedule is None:
+        td_lambda_schedule = default_schedules["td_lambda"]
+
     optimizer = optax.MultiSteps(
-        optax.adam(learning_rate), players_per_game, use_grad_mean=False
+        optax.chain(optax.adam(learning_rate=1), optax.scale_by_schedule(lr_schedule)),
+        players_per_game,
     )
     opt_state = optimizer.init(base_agent.get_weights())
 
@@ -133,7 +145,6 @@ def train_a2c(
 
     loss_type = "supervised" if pretraining else "a2c"
     loss_fn = compile_loss_function(loss_type, base_agent._network)
-    loss_kwargs = dict(entropy_cost=entropy_cost)
     sgd_step = compile_sgd_step(loss_fn, optimizer)
 
     best_score = -float("inf")
@@ -162,16 +173,20 @@ def train_a2c(
         )
 
         weights = base_agent._weights
+        loss_kwargs = dict(
+            entropy_cost=entropy_schedule(i), td_lambda=td_lambda_schedule(i)
+        )
 
         for p in range(players_per_game):
-            observations, keep_actions, cat_actions, rewards = zip(*trajectories[p])
+            observations, actions, rewards = zip(*trajectories[p])
             assert sum(rewards) == scores[p].total_score()
 
             observations = np.stack(observations, axis=0)
-            keep_actions = np.array(keep_actions, dtype=np.int32)
-            cat_actions = np.array(cat_actions, dtype=np.int32)
+            actions = np.array(actions, dtype=np.int32)
             rewards = np.array(rewards, dtype=np.float32) / REWARD_NORM
 
+            logger.debug(" observations {}: {}", p, observations)
+            logger.debug(" actions {}: {}", p, actions)
             logger.debug(" rewards {}: {}", p, rewards)
 
             if objective == "win" and p == winner:
@@ -181,14 +196,13 @@ def train_a2c(
                 weights,
                 opt_state,
                 observations,
-                keep_actions,
-                cat_actions,
+                actions,
                 rewards,
                 **loss_kwargs
             )
 
             loss_components = loss_fn(
-                weights, observations, keep_actions, cat_actions, rewards, **loss_kwargs
+                weights, observations, actions, rewards, **loss_kwargs
             )
             loss_components = [float(k) for k in loss_components]
 

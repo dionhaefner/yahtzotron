@@ -20,6 +20,8 @@ DISK_CACHE = os.path.expanduser(os.path.join("~", ".yahtzotron"))
 
 @memoize
 def create_network(objective, num_dice, num_categories):
+    from yahtzotron.training import MINIMUM_LOGIT
+
     input_shapes = [
         1,  # number of rerolls left
         6,  # count of each die value
@@ -35,15 +37,19 @@ def create_network(objective, num_dice, num_categories):
     keep_action_space = 2 ** num_dice
 
     def network(inputs):
+        rolls_left = inputs[..., 0, None]
         player_scorecard_idx = slice(sum(input_shapes[:2]), sum(input_shapes[:3]))
         init = hk.initializers.VarianceScaling(2.0, "fan_in", "truncated_normal")
 
-        x = hk.Linear(256, w_init=init)(inputs)
+        x = hk.Linear(128, w_init=init)(inputs)
         x = jax.nn.relu(x)
         x = hk.Linear(256, w_init=init)(x)
         x = jax.nn.relu(x)
+        x = hk.Linear(128, w_init=init)(x)
+        x = jax.nn.relu(x)
 
         out_value = hk.Linear(1)(x)
+
         out_keep = hk.Linear(keep_action_space)(x)
 
         out_category = hk.Linear(num_categories)(x)
@@ -54,7 +60,19 @@ def create_network(objective, num_dice, num_categories):
             out_category,
         )
 
-        return out_keep, out_category, jnp.squeeze(out_value, axis=-1)
+        def pad_action(logit, num_pad):
+            pad_shape = [(0, 0)] * (logit.ndim - 1) + [(0, num_pad)]
+            return jnp.pad(logit, pad_shape, constant_values=MINIMUM_LOGIT)
+
+        if keep_action_space < num_categories:
+            out_keep = pad_action(out_keep, num_categories - keep_action_space)
+
+        elif keep_action_space > num_categories:
+            out_category = pad_action(out_category, keep_action_space - num_categories)
+
+        out_action = jnp.where(rolls_left == 0, out_category, out_keep)
+
+        return out_action, jnp.squeeze(out_value, axis=-1)
 
     forward = hk.without_apply_rng(hk.transform(network))
     return forward, input_shapes
@@ -80,7 +98,6 @@ def play_turn(
     net,
     weights,
     num_dice,
-    num_categories,
     roll_lut,
     opponent_value=None,
     greedy=False,
@@ -104,12 +121,12 @@ def play_turn(
             net_input = assemble_network_inputs(
                 rolls_left, dice_count, player_scorecard_arr, opponent_value
             )
-            keep_action, category_idx = get_action_greedy(
+            action = get_action_greedy(
                 rolls_left, current_dice, player_scorecard, roll_lut
             )
             value = None
         else:
-            net_input, keep_action, category_idx, value = get_action(
+            net_input, action, value = get_action(
                 rolls_left,
                 dice_count,
                 player_scorecard_arr,
@@ -119,20 +136,24 @@ def play_turn(
             )
 
         if rolls_left > 0:
+            keep_action = action
+            category_idx = None
             dice_to_keep = np.unpackbits(
                 np.uint8(keep_action), count=num_dice, bitorder="little"
             )
         else:
-            dice_to_keep = (1,) * num_dice
+            keep_action = None
+            category_idx = action
+            dice_to_keep = [1] * num_dice
 
         logger.debug(" Observation: {}", net_input)
-        logger.debug(" Cat. action: {}", category_idx)
         logger.debug(" Keep action: {}", dice_to_keep)
         logger.debug(" Value: {}", value)
 
         yield dict(
             rolls_left=rolls_left,
             net_input=net_input,
+            action=action,
             keep_action=keep_action,
             category_idx=category_idx,
             value=value,
@@ -181,11 +202,10 @@ def get_action(
     network_inputs = assemble_network_inputs(
         rolls_left, dice_count, player_scorecard, opponent_value
     )
-    keep_logits, category_logits, value = network(weights, network_inputs)
-    keep_action = choose_from_logits(keep_logits)
-    category_action = choose_from_logits(category_logits)
+    action_logits, value = network(weights, network_inputs)
+    action = choose_from_logits(action_logits)
 
-    return network_inputs, keep_action, category_action, value
+    return network_inputs, action, value
 
 
 def get_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
@@ -218,11 +238,10 @@ def get_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
             roll_lut["full"][current_dice][category_action].keys(),
             key=lambda k: roll_lut["full"][current_dice][category_action][k],
         )
-    else:
-        dice_to_keep = (1,) * num_dice
+        keep_action = int(np.packbits(dice_to_keep, bitorder="little"))
+        return keep_action
 
-    keep_action = int(np.packbits(dice_to_keep, bitorder="little"))
-    return keep_action, category_action
+    return category_action
 
 
 class Yahtzotron:
@@ -285,8 +304,7 @@ class Yahtzotron:
                 ],
                 axis=0,
             )
-            _, _, opponent_values = self._network(self._weights, net_input)
-            # print(opponent_values)
+            _, opponent_values = self._network(self._weights, net_input)
             opponent_value = np.max(opponent_values)
         else:
             opponent_value = None
@@ -303,7 +321,6 @@ class Yahtzotron:
             net=self._network,
             weights=self._weights,
             num_dice=self._ruleset.num_dice,
-            num_categories=self._ruleset.num_categories,
             roll_lut=roll_lut,
             greedy=greedy,
         )

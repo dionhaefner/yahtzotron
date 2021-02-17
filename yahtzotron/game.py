@@ -68,21 +68,18 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
 
     for t in range(ruleset.num_rounds):
         if deterministic_rolls:
-            rng_seed = np.random.randint(int(1e10))
+            player_rolls = np.tile(np.random.randint(1, 7, size=(1, 3, num_dice)), (num_players, 1, 1))
         else:
-            rng_seed = None
+            player_rolls = np.random.randint(1, 7, size=(num_players, 3, num_dice))
 
         for p in range(num_players):
-            rng = np.random.default_rng(rng_seed)
-
             my_score = scores[p]
             other_scores = [scores[i] for i in range(num_players) if i != p]
 
             turn_iter = agents[p].turn(my_score, other_scores)
-            for turn_state in turn_iter:
+            for roll_num, turn_state in enumerate(turn_iter):
                 if isinstance(turn_state, int):
-                    dice_roll = rng.integers(1, 7, size=num_dice)[:turn_state]
-                    turn_state = turn_iter.send(dice_roll)
+                    turn_state = turn_iter.send(player_rolls[p, roll_num, :turn_state])
 
                 if turn_state["rolls_left"] == 0:
                     reward = scores[p].register_score(
@@ -95,8 +92,7 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
                     trajectories[p].append(
                         (
                             turn_state["net_input"],
-                            turn_state["keep_action"],
-                            turn_state["category_idx"],
+                            turn_state["action"],
                             reward,
                         )
                     )

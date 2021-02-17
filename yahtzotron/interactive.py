@@ -163,15 +163,14 @@ def play_interactive(model_path):
 
 
 def print_score(scorecard):
-    colwidth = max(len(c.name) for c in scorecard.ruleset_.categories) + 2
+    pretty_names = [cat.name.replace("_", " ").title() for cat in scorecard.ruleset_.categories]
+    colwidth = max(len(pn) for pn in pretty_names) + 2
 
     def align(string):
         format_string = f"{{:<{colwidth}}}"
         return format_string.format(string)
 
     separator_line = "".join(["=" * colwidth, "+", "=" * 5])
-
-    bonus_total, non_bonus_total = scorecard.score_summary()
 
     out = ["", separator_line]
 
@@ -182,7 +181,7 @@ def print_score(scorecard):
         score = scorecard.scores[i]
         filled = scorecard.filled[i]
 
-        line = "".join([align(f" {cat.name}"), "| ", str(score) if filled else ""])
+        line = "".join([align(f" {pretty_names[i]}"), "| ", str(score) if filled else ""])
         out.append(line)
 
     out.append(separator_line)
@@ -204,7 +203,7 @@ def print_score(scorecard):
         score = scorecard.scores[i]
         filled = scorecard.filled[i]
 
-        line = "".join([align(f" {cat.name}"), "| ", str(score) if filled else ""])
+        line = "".join([align(f" {pretty_names[i]}"), "| ", str(score) if filled else ""])
         out.append(line)
 
     out.append(separator_line)

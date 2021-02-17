@@ -34,6 +34,16 @@ def cli(ctx, loglevel):
     logger.remove()
     logger.add(sys.stderr, level=loglevel.upper())
 
+    # hack: monkey-patch disabled logging calls for performance
+    def noop(*args, **kwargs):
+        pass
+
+    if loglevel != "debug":
+        logger.debug = noop
+
+    if loglevel not in ("debug", "info"):
+        logger.info = noop
+
 
 @cli.command("train")
 @click.option(
@@ -56,17 +66,9 @@ def train(out, ruleset, num_epochs, no_restore, objective):
     yzt = Yahtzotron(ruleset=ruleset, objective=objective, load_path=load_path)
 
     if load_path is None:
-        yzt = train_a2c(yzt, num_epochs=20000, pretraining=True, learning_rate=5e-3)
+        yzt = train_a2c(yzt, num_epochs=20000, pretraining=True)
 
-    stage_1_epochs = round(0.6 * num_epochs)
-    yzt = train_a2c(yzt, num_epochs=stage_1_epochs, checkpoint_path=out)
-    yzt = train_a2c(
-        yzt,
-        num_epochs=num_epochs - stage_1_epochs,
-        checkpoint_path=out,
-        entropy_cost=0,
-        learning_rate=1e-4,
-    )
+    yzt = train_a2c(yzt, num_epochs=num_epochs, checkpoint_path=out)
 
     yzt.save(out)
 
@@ -118,15 +120,13 @@ def evaluate(agents, num_rounds, ruleset, deterministic_rolls):
             scorecards = play_tournament(
                 agent_obj, deterministic_rolls=deterministic_rolls
             )
-            sorted_scores = sorted(
-                enumerate([s.total_score() for s in scorecards]),
-                key=lambda args: args[1],
-                reverse=True,
-            )
+            total_scores = [s.total_score() for s in scorecards]
+            sorted_scores = sorted(total_scores, reverse=True)
 
-            for rank, (i, score) in enumerate(sorted_scores, 1):
+            for i, score in enumerate(total_scores):
                 scores_per_agent[i].append(score)
-                rank_per_agent[i].append(rank)
+                # use .index to handle ties correctly
+                rank_per_agent[i].append(sorted_scores.index(score) + 1)
 
     except KeyboardInterrupt:
         pass
