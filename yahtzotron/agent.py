@@ -74,8 +74,35 @@ def create_network(objective, num_dice, num_categories):
 
         return out_action, jnp.squeeze(out_value, axis=-1)
 
+    def strategy_network(inputs):
+        player_scorecard_idx = slice(sum(input_shapes[:2]), sum(input_shapes[:3]))
+        init = hk.initializers.VarianceScaling(2.0, "fan_in", "truncated_normal")
+
+        x = hk.Linear(24, w_init=init)(inputs)
+        x = jax.nn.relu(x)
+        x = hk.Linear(48, w_init=init)(x)
+        x = jax.nn.relu(x)
+        x = hk.Linear(24, w_init=init)(x)
+        x = jax.nn.relu(x)
+
+        out_category = hk.Linear(num_categories)(x)
+        out_category = jnp.where(
+            # disallow already filled categories
+            inputs[..., player_scorecard_idx] == 1,
+            MINIMUM_LOGIT,
+            out_category,
+        )
+
+        return out_category
+
     forward = hk.without_apply_rng(hk.transform(network))
-    return forward, input_shapes
+    forward_strategy = hk.without_apply_rng(hk.transform(strategy_network))
+
+    return {
+        "input-shapes": input_shapes,
+        "network": forward,
+        "strategy-network": forward_strategy,
+    }
 
 
 @memoize
@@ -92,15 +119,29 @@ def get_lut(path, ruleset):
     return roll_lut
 
 
+def get_opponent_value(opponent_scorecards, network, weights):
+    if not hasattr(opponent_scorecards, "__iter__"):
+        opponent_scorecards = [opponent_scorecards]
+
+    net_input = np.stack(
+        [
+            assemble_network_inputs(2, np.zeros(6), o.to_array(), 0.0)
+            for o in opponent_scorecards
+        ],
+        axis=0,
+    )
+    _, opponent_values = network(weights, net_input)
+    return np.max(opponent_values)
+
+
 def play_turn(
     player_scorecard,
     objective,
-    net,
+    network,
     weights,
     num_dice,
-    roll_lut,
+    use_lut=None,
     opponent_value=None,
-    greedy=False,
 ):
     player_scorecard_arr = player_scorecard.to_array()
 
@@ -117,21 +158,21 @@ def play_turn(
         current_dice = tuple(sorted(kept_dice + roll_input))
         dice_count = np.bincount(current_dice, minlength=7)[1:]
 
-        if greedy:
-            net_input = assemble_network_inputs(
+        if use_lut:
+            observation = assemble_network_inputs(
                 rolls_left, dice_count, player_scorecard_arr, opponent_value
             )
             action = get_action_greedy(
-                rolls_left, current_dice, player_scorecard, roll_lut
+                rolls_left, current_dice, player_scorecard, use_lut
             )
             value = None
         else:
-            net_input, action, value = get_action(
+            observation, action, value = get_action(
                 rolls_left,
                 dice_count,
                 player_scorecard_arr,
                 opponent_value,
-                net,
+                network,
                 weights,
             )
 
@@ -146,13 +187,13 @@ def play_turn(
             category_idx = action
             dice_to_keep = [1] * num_dice
 
-        logger.debug(" Observation: {}", net_input)
+        logger.debug(" Observation: {}", observation)
         logger.debug(" Keep action: {}", dice_to_keep)
         logger.debug(" Value: {}", value)
 
         yield dict(
             rolls_left=rolls_left,
-            net_input=net_input,
+            observation=observation,
             action=action,
             keep_action=keep_action,
             category_idx=category_idx,
@@ -261,7 +302,7 @@ class Yahtzotron:
         else:
             self.load(load_path)
 
-        self._default_greedy = greedy
+        self._be_greedy = greedy
         self._roll_lut_path = os.path.join(
             DISK_CACHE, f"roll_lut_{self._ruleset.name}.pkl"
         )
@@ -271,45 +312,45 @@ class Yahtzotron:
             self._ruleset.num_categories,
         )
 
-        net, input_shape = create_network(self._objective, num_dice, num_categories)
-        self._network = jax.jit(net.apply)
+        networks = create_network(self._objective, num_dice, num_categories)
+        self._network = jax.jit(networks["network"].apply)
+        self._strategy_network = jax.jit(networks["strategy-network"].apply)
 
         if load_path is None:
-            self._weights = net.init(
-                next(key), jnp.ones((1, sum(input_shape)), dtype=jnp.float32)
+            self._weights = networks["network"].init(
+                next(key),
+                jnp.ones((1, sum(networks["input-shapes"])), dtype=jnp.float32),
             )
+            self._strategy_weights = networks["strategy-network"].init(
+                next(key),
+                jnp.ones((1, sum(networks["input-shapes"])), dtype=jnp.float32),
+            )
+
+    def explain(self, observation):
+        cat_logits = self._strategy_network(self._strategy_weights, observation)
+        cat_prob = np.exp(cat_logits - cat_logits.max())
+        cat_prob /= cat_prob.sum()
+        return dict(*sorted(enumerate(cat_prob), key=lambda k: k[1], reverse=True))
 
     def turn(
         self,
         player_scorecard,
         opponent_scorecards=None,
-        greedy=None,
     ):
-        if greedy is None:
-            greedy = self._default_greedy
-
         if self._objective == "win":
-            if opponent_scorecards is None:
-                raise ValueError(
-                    'Opponent scorecards must be given for "win" objective'
-                )
+            if opponent_scorecards is None or (
+                hasattr(opponent_scorecards, "__iter__")
+                and len(opponent_scorecards) == 0
+            ):
+                opponent_scorecards = player_scorecard
 
-            if not hasattr(opponent_scorecards, "__iter__"):
-                opponent_scorecards = [opponent_scorecards]
-
-            net_input = np.stack(
-                [
-                    assemble_network_inputs(2, np.zeros(6), o.to_array(), 0.0)
-                    for o in opponent_scorecards
-                ],
-                axis=0,
+            opponent_value = get_opponent_value(
+                opponent_scorecards, self._network, self._weights
             )
-            _, opponent_values = self._network(self._weights, net_input)
-            opponent_value = np.max(opponent_values)
         else:
             opponent_value = None
 
-        if greedy:
+        if self._be_greedy:
             roll_lut = get_lut(self._roll_lut_path, self._ruleset)
         else:
             roll_lut = None
@@ -318,18 +359,24 @@ class Yahtzotron:
             player_scorecard,
             opponent_value=opponent_value,
             objective=self._objective,
-            net=self._network,
+            network=self._network,
             weights=self._weights,
             num_dice=self._ruleset.num_dice,
-            roll_lut=roll_lut,
-            greedy=greedy,
+            use_lut=roll_lut,
         )
 
-    def get_weights(self):
+    def get_weights(self, strategy=False):
+        if strategy:
+            return self._strategy_weights
+
         return self._weights
 
-    def set_weights(self, new_weights):
-        self._weights = hk.data_structures.to_immutable_dict(new_weights)
+    def set_weights(self, new_weights, strategy=False):
+        new_weights = hk.data_structures.to_immutable_dict(new_weights)
+        if strategy:
+            self._strategy_weights = new_weights
+        else:
+            self._weights = new_weights
 
     def clone(self, keep_weights=True):
         yzt = self.__class__(ruleset=self._ruleset.name, objective=self._objective)
@@ -346,6 +393,7 @@ class Yahtzotron:
             objective=self._objective,
             ruleset=self._ruleset.name,
             weights=self._weights,
+            strategy_weights=self._strategy_weights,
         )
 
         with open(path, "wb") as f:
@@ -358,6 +406,7 @@ class Yahtzotron:
         self._objective = statedict["objective"]
         self._ruleset = AVAILABLE_RULESETS[statedict["ruleset"]]
         self._weights = statedict["weights"]
+        self._strategy_weights = statedict["strategy_weights"]
 
     def __repr__(self):
         return f"{self.__class__.__name__}(ruleset={self._ruleset}, objective={self._objective})"

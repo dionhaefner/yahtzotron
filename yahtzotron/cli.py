@@ -57,7 +57,7 @@ def cli(ctx, loglevel):
 @click.option("--objective", type=click.Choice(["win", "avg_score"]), default="win")
 def train(out, ruleset, num_epochs, no_restore, objective):
     from yahtzotron.agent import Yahtzotron
-    from yahtzotron.training import train_a2c
+    from yahtzotron.training import train_a2c, train_strategy
 
     load_path = None
     if os.path.exists(out) and not no_restore:
@@ -66,10 +66,10 @@ def train(out, ruleset, num_epochs, no_restore, objective):
     yzt = Yahtzotron(ruleset=ruleset, objective=objective, load_path=load_path)
 
     if load_path is None:
-        yzt = train_a2c(yzt, num_epochs=20000, pretraining=True)
+        yzt = train_a2c(yzt, num_epochs=20_000, pretraining=True)
 
     yzt = train_a2c(yzt, num_epochs=num_epochs, checkpoint_path=out)
-
+    yzt = train_strategy(yzt, num_epochs=10_000)
     yzt.save(out)
 
 

@@ -48,7 +48,9 @@ def play_interactive(model_path):
         while True:
             if num_dice_to_roll == yzt._ruleset.num_dice:
                 pass
-            speak(f"The current dice are {current_roll}. Please tell me ")
+            speak(
+                f"The current dice are {current_roll}. Please tell me which ones I should keep."
+            )
 
     player_scorecard = Scorecard(yzt._ruleset)
     yzt_scorecard = Scorecard(yzt._ruleset)
@@ -64,10 +66,13 @@ def play_interactive(model_path):
         score_str = [
             print_score(s).split("\n") for s in (player_scorecard, yzt_scorecard)
         ]
-        click.echo(f"\n{' Your score':<30} Yahtzotron's score")
+        click.echo(
+            click.style(f"\n{' Your score':<30} Yahtzotron's score", bold=True),
+            nl=False,
+        )
         click.echo("\n".join(f"{s1:<30}{s2}" for s1, s2 in zip(*score_str)))
 
-        roll = get_roll(roll)
+        roll = get_roll([0] * yzt._ruleset.num_dice)
 
         for roll_num in range(1, 3):
             speak(f"Your roll #{roll_num}: {roll}")
@@ -117,6 +122,7 @@ def play_interactive(model_path):
         speak(f"OK, I've added {new_score} to your score. My turn!")
         click.echo("")
 
+        roll = [0] * yzt._ruleset.num_dice
         turn_iter = yzt.turn(yzt_scorecard, player_scorecard)
         for turn_result in turn_iter:
             if isinstance(turn_result, int):
@@ -130,15 +136,18 @@ def play_interactive(model_path):
             time.sleep(0.5)
 
             if turn_result["rolls_left"] > 0:
+                strategy = yzt.explain(turn_result["observation"])
                 kept_dice = [
                     die for die, keep in zip(roll, turn_result["dice_to_keep"]) if keep
                 ]
                 speak(
-                    f"I think I should go for {categories[turn_result['category_idx']].name}, so I'm keeping {kept_dice}."
+                    f"I think I should go for {categories[strategy].name}, "
+                    f"so I'm keeping {kept_dice}."
                 )
             else:
                 speak(
-                    f"I'll pick the \"{categories[turn_result['category_idx']].name}\" category for that."
+                    f"I'll pick the \"{categories[turn_result['category_idx']].name}\" "
+                    "category for that."
                 )
                 yzt_scorecard.register_score(
                     turn_result["dice_count"], turn_result["category_idx"]
@@ -163,7 +172,9 @@ def play_interactive(model_path):
 
 
 def print_score(scorecard):
-    pretty_names = [cat.name.replace("_", " ").title() for cat in scorecard.ruleset_.categories]
+    pretty_names = [
+        cat.name.replace("_", " ").title() for cat in scorecard.ruleset_.categories
+    ]
     colwidth = max(len(pn) for pn in pretty_names) + 2
 
     def align(string):
@@ -181,7 +192,9 @@ def print_score(scorecard):
         score = scorecard.scores[i]
         filled = scorecard.filled[i]
 
-        line = "".join([align(f" {pretty_names[i]}"), "| ", str(score) if filled else ""])
+        line = "".join(
+            [align(f" {pretty_names[i]}"), "| ", str(score) if filled else ""]
+        )
         out.append(line)
 
     out.append(separator_line)
@@ -203,7 +216,9 @@ def print_score(scorecard):
         score = scorecard.scores[i]
         filled = scorecard.filled[i]
 
-        line = "".join([align(f" {pretty_names[i]}"), "| ", str(score) if filled else ""])
+        line = "".join(
+            [align(f" {pretty_names[i]}"), "| ", str(score) if filled else ""]
+        )
         out.append(line)
 
     out.append(separator_line)

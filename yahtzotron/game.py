@@ -24,7 +24,7 @@ class Scorecard:
     def register_score(self, roll, cat_index):
         roll = np.array(roll)
         total_score_old = self.total_score()
-        score = self.ruleset_.score(roll, cat_index, self.filled)
+        score = self.ruleset_.score(roll, cat_index, self.filled, self.scores)
         self.scores[cat_index] = score
         self.filled[cat_index] = 1
         return self.total_score() - total_score_old
@@ -68,7 +68,9 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
 
     for t in range(ruleset.num_rounds):
         if deterministic_rolls:
-            player_rolls = np.tile(np.random.randint(1, 7, size=(1, 3, num_dice)), (num_players, 1, 1))
+            player_rolls = np.tile(
+                np.random.randint(1, 7, size=(1, 3, num_dice)), (num_players, 1, 1)
+            )
         else:
             player_rolls = np.random.randint(1, 7, size=(num_players, 3, num_dice))
 
@@ -91,7 +93,7 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
                 if record_trajectories:
                     trajectories[p].append(
                         (
-                            turn_state["net_input"],
+                            turn_state["observation"],
                             turn_state["action"],
                             reward,
                         )

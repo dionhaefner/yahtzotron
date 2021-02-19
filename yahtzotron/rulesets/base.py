@@ -35,10 +35,10 @@ class Ruleset:
         self.bonus_cutoff_ = bonus_cutoff
         self.bonus_score_ = bonus_score
 
-    def score(self, roll, cat_idx, filled_categories):
+    def score(self, roll, cat_idx, filled_categories, scores):
         if filled_categories[cat_idx]:
             raise ValueError("Cannot score already filled category")
-        return self.categories[cat_idx].score(roll, filled_categories)
+        return self.categories[cat_idx].score(roll, filled_categories, scores)
 
     def total_score(self, scores):
         return scores.sum() + self.bonus_value(scores)

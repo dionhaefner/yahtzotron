@@ -75,19 +75,10 @@ def compile_loss_function(type_, network):
 
 
 def compile_sgd_step(loss_func, optimizer):
-    def sgd_step(
-        weights,
-        opt_state,
-        observations,
-        actions,
-        rewards,
-        **loss_kwargs
-    ):
+    def sgd_step(weights, opt_state, observations, actions, rewards, **loss_kwargs):
         """Does a step of SGD over a trajectory."""
         total_loss = lambda *args: sum(loss_func(*args, **loss_kwargs))
-        gradients = jax.grad(total_loss)(
-            weights, observations, actions, rewards
-        )
+        gradients = jax.grad(total_loss)(weights, observations, actions, rewards)
         updates, opt_state = optimizer.update(gradients, opt_state)
         weights = optax.apply_updates(weights, updates)
         return weights, opt_state
@@ -105,7 +96,9 @@ def get_default_schedules(pretraining=False):
 
     return dict(
         learning_rate=optax.exponential_decay(1e-3, 60_000, decay_rate=0.2),
-        entropy=optax.exponential_decay(1e-3, 10_000, decay_rate=0.1, transition_begin=60_000),
+        entropy=optax.exponential_decay(
+            1e-3, 10_000, decay_rate=0.1, transition_begin=60_000
+        ),
         td_lambda=optax.polynomial_schedule(0.2, 0.8, power=1, transition_steps=60_000),
     )
 
@@ -193,12 +186,7 @@ def train_a2c(
                 rewards[-1] += WINNING_REWARD / REWARD_NORM
 
             weights, opt_state = sgd_step(
-                weights,
-                opt_state,
-                observations,
-                actions,
-                rewards,
-                **loss_kwargs
+                weights, opt_state, observations, actions, rewards, **loss_kwargs
             )
 
             loss_components = loss_fn(
@@ -240,3 +228,65 @@ def train_a2c(
             )
 
     return base_agent
+
+
+def train_strategy(agent, num_epochs, learning_rate=1e-3):
+    optimizer = optax.adam(learning_rate=learning_rate)
+    opt_state = optimizer.init(agent.get_weights(strategy=True))
+
+    num_rolls = 3
+
+    @jax.jit
+    def loss_fn(weights, observation, action, *args):
+        loss = jnp.zeros(1)
+
+        final_actions = action[num_rolls - 1 :: num_rolls]
+
+        for i_roll in range(num_rolls - 1):
+            logits = agent._strategy_network(weights, observation[i_roll::num_rolls])
+            loss = loss + jnp.mean(cross_entropy(logits, final_actions))
+
+        return loss
+
+    sgd_step = compile_sgd_step(loss_fn, optimizer)
+    running_loss = deque(maxlen=1000)
+
+    progress = tqdm.tqdm(range(num_epochs), dynamic_ncols=True)
+
+    for i in progress:
+        scores, trajectories = play_tournament([agent], record_trajectories=True)
+
+        weights = agent.get_weights(strategy=True)
+        observations, actions, _ = zip(*trajectories[0])
+
+        rolls_left = observations[..., 0]
+        for i in range(num_rolls):
+            assert np.all(rolls_left[num_rolls - 1 :: num_rolls] == num_rolls - i)
+
+        observations = np.stack(observations, axis=0)
+        actions = np.array(actions, dtype=np.int32)
+
+        logger.debug(" observations: {}", observations)
+        logger.debug(" actions: {}", actions)
+
+        weights, opt_state = sgd_step(
+            weights,
+            opt_state,
+            observations,
+            actions,
+            None,
+        )
+
+        loss = float(loss_fn(weights, observations, actions))
+
+        if len(running_loss) == running_loss.maxlen:
+            running_loss.popleft()
+
+        running_loss.append(loss)
+
+        agent.set_weights(weights, strategy=True)
+
+        if i % 100 == 0:
+            progress.set_postfix(dict(loss=np.mean(running_loss)))
+
+    return agent
