@@ -144,7 +144,7 @@ def train_a2c(
 
     if pretraining:
         greedy_agent = base_agent.clone()
-        greedy_agent._default_greedy = True
+        greedy_agent._be_greedy = True
         agents = [greedy_agent] * players_per_game
     else:
         agents = [base_agent] * players_per_game
@@ -230,7 +230,7 @@ def train_a2c(
     return base_agent
 
 
-def train_strategy(agent, num_epochs, learning_rate=1e-3):
+def train_strategy(agent, num_epochs, players_per_game=4, learning_rate=1e-3):
     optimizer = optax.adam(learning_rate=learning_rate)
     opt_state = optimizer.init(agent.get_weights(strategy=True))
 
@@ -254,39 +254,43 @@ def train_strategy(agent, num_epochs, learning_rate=1e-3):
     progress = tqdm.tqdm(range(num_epochs), dynamic_ncols=True)
 
     for i in progress:
-        scores, trajectories = play_tournament([agent], record_trajectories=True)
-
-        weights = agent.get_weights(strategy=True)
-        observations, actions, _ = zip(*trajectories[0])
-
-        rolls_left = observations[..., 0]
-        for i in range(num_rolls):
-            assert np.all(rolls_left[num_rolls - 1 :: num_rolls] == num_rolls - i)
-
-        observations = np.stack(observations, axis=0)
-        actions = np.array(actions, dtype=np.int32)
-
-        logger.debug(" observations: {}", observations)
-        logger.debug(" actions: {}", actions)
-
-        weights, opt_state = sgd_step(
-            weights,
-            opt_state,
-            observations,
-            actions,
-            None,
+        _, trajectories = play_tournament(
+            [agent] * players_per_game, record_trajectories=True
         )
 
-        loss = float(loss_fn(weights, observations, actions))
+        weights = agent.get_weights(strategy=True)
 
-        if len(running_loss) == running_loss.maxlen:
-            running_loss.popleft()
+        for p in range(players_per_game):
+            observations, actions, _ = zip(*trajectories[p])
 
-        running_loss.append(loss)
+            observations = np.stack(observations, axis=0)
+            actions = np.array(actions, dtype=np.int32)
+
+            rolls_left = observations[..., 0]
+            for k in range(num_rolls):
+                assert np.all(rolls_left[k::num_rolls] == num_rolls - k - 1)
+
+            logger.debug(" observations {}: {}", p, observations)
+            logger.debug(" actions {}: {}", p, actions)
+
+            weights, opt_state = sgd_step(
+                weights,
+                opt_state,
+                observations,
+                actions,
+                None,
+            )
+
+            loss = float(loss_fn(weights, observations, actions))
+
+            if len(running_loss) == running_loss.maxlen:
+                running_loss.popleft()
+
+            running_loss.append(loss)
 
         agent.set_weights(weights, strategy=True)
 
-        if i % 100 == 0:
+        if i % 10 == 0:
             progress.set_postfix(dict(loss=np.mean(running_loss)))
 
     return agent

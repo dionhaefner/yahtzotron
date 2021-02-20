@@ -8,9 +8,9 @@ import numpy as np
 
 
 @lru_cache(maxsize=None)
-def _memoized_score(roll, cat_idx, scorecard, ruleset):
+def _memoized_score(roll, cat_idx, scorecard, scores, ruleset):
     dice_count = np.bincount(roll, minlength=7)[1:]
-    return ruleset.score(dice_count, cat_idx, scorecard)
+    return ruleset.score(dice_count, cat_idx, scorecard, scores)
 
 
 @lru_cache(maxsize=None)
@@ -25,6 +25,7 @@ def num_unique_permutations(tup):
 def get_expected_reward(initial_roll, cat_idx, ruleset):
     num_dice = ruleset.num_dice
     dummy_scorecard = (0,) * ruleset.num_categories
+    dummy_scores = (0,) * ruleset.num_categories
 
     expected_reward = {}
     for action in itertools.product((0, 1), repeat=num_dice):
@@ -39,7 +40,7 @@ def get_expected_reward(initial_roll, cat_idx, ruleset):
             possible_combinations = num_unique_permutations(final_roll)
             final_dice = tuple(sorted(kept_dice + final_roll))
             expected_reward[action] += possible_combinations * _memoized_score(
-                final_dice, cat_idx, dummy_scorecard, ruleset
+                final_dice, cat_idx, dummy_scorecard, dummy_scores, ruleset
             )
             count += possible_combinations
 

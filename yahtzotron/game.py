@@ -79,9 +79,12 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
             other_scores = [scores[i] for i in range(num_players) if i != p]
 
             turn_iter = agents[p].turn(my_score, other_scores)
-            for roll_num, turn_state in enumerate(turn_iter):
-                if isinstance(turn_state, int):
-                    turn_state = turn_iter.send(player_rolls[p, roll_num, :turn_state])
+            for roll_num, kept_dice in enumerate(turn_iter):
+                num_to_roll = num_dice - len(kept_dice)
+                new_roll = np.concatenate(
+                    [kept_dice, player_rolls[p, roll_num, :num_to_roll]]
+                )
+                turn_state = turn_iter.send(new_roll)
 
                 if turn_state["rolls_left"] == 0:
                     reward = scores[p].register_score(

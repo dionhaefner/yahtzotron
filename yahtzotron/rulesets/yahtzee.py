@@ -88,8 +88,9 @@ def small_straight(roll, filled_categories, scores):
     if 5 in roll:
         return 30 + _yahtzee_bonus(roll, filled_categories, scores)
 
-    if all(roll[:5] >= (1, 1, 1, 1, 1)):
-        return 30
+    for i in range(3):
+        if all(roll[i : i + 4] >= (1, 1, 1, 1)):
+            return 30
 
     return 0
 
@@ -99,8 +100,17 @@ def large_straight(roll, filled_categories, scores):
     if 5 in roll:
         return 40 + _yahtzee_bonus(roll, filled_categories, scores)
 
-    if all(roll[1:] >= (1, 1, 1, 1, 1)):
-        return 40
+    for i in range(2):
+        if all(roll[i : i + 5] >= (1, 1, 1, 1, 1)):
+            return 40
+
+    return 0
+
+
+@make_category
+def yahtzee(roll, filled_categories, scores):
+    if 5 in roll:
+        return 50
 
     return 0
 
@@ -108,14 +118,6 @@ def large_straight(roll, filled_categories, scores):
 @make_category
 def chance(roll, filled_categories, scores):
     return _sum_of_all_dice(roll) + _yahtzee_bonus(roll, filled_categories, scores)
-
-
-@make_category
-def yahtzee(roll, filled_categories, scores):
-    if 5 in roll:
-        return 50 + _yahtzee_bonus(roll, filled_categories, scores)
-
-    return 0
 
 
 yahtzee_rules = Ruleset(

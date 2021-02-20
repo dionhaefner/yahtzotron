@@ -78,11 +78,11 @@ def create_network(objective, num_dice, num_categories):
         player_scorecard_idx = slice(sum(input_shapes[:2]), sum(input_shapes[:3]))
         init = hk.initializers.VarianceScaling(2.0, "fan_in", "truncated_normal")
 
-        x = hk.Linear(24, w_init=init)(inputs)
+        x = hk.Linear(64, w_init=init)(inputs)
         x = jax.nn.relu(x)
-        x = hk.Linear(48, w_init=init)(x)
+        x = hk.Linear(128, w_init=init)(x)
         x = jax.nn.relu(x)
-        x = hk.Linear(24, w_init=init)(x)
+        x = hk.Linear(64, w_init=init)(x)
         x = jax.nn.relu(x)
 
         out_category = hk.Linear(num_categories)(x)
@@ -151,12 +151,12 @@ def play_turn(
     current_dice = (0,) * num_dice
     dice_to_keep = (0,) * num_dice
 
-    for rolls_left in range(2, -1, -1):
+    for rolls_left in (2, 1, 0):
         kept_dice = tuple(die for die, keep in zip(current_dice, dice_to_keep) if keep)
-        num_dice_to_roll = num_dice - len(kept_dice)
-        roll_input = tuple((yield num_dice_to_roll))
-        current_dice = tuple(sorted(kept_dice + roll_input))
+        roll_input = yield kept_dice
+        current_dice = tuple(sorted(roll_input))
         dice_count = np.bincount(current_dice, minlength=7)[1:]
+        assert np.all(dice_count - np.bincount(kept_dice, minlength=7)[1:] >= 0)
 
         if use_lut:
             observation = assemble_network_inputs(
@@ -330,7 +330,7 @@ class Yahtzotron:
         cat_logits = self._strategy_network(self._strategy_weights, observation)
         cat_prob = np.exp(cat_logits - cat_logits.max())
         cat_prob /= cat_prob.sum()
-        return dict(*sorted(enumerate(cat_prob), key=lambda k: k[1], reverse=True))
+        return dict(sorted(enumerate(cat_prob), key=lambda k: k[1], reverse=True))
 
     def turn(
         self,
