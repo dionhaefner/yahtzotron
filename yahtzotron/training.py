@@ -96,9 +96,7 @@ def get_default_schedules(pretraining=False):
 
     return dict(
         learning_rate=optax.exponential_decay(1e-3, 60_000, decay_rate=0.2),
-        entropy=optax.exponential_decay(
-            1e-3, 10_000, decay_rate=0.1, transition_begin=60_000
-        ),
+        entropy=(lambda count: 1e-3 * 0.1 ** (count / 80_000) if count < 80_000 else -1e-2),
         td_lambda=optax.polynomial_schedule(0.2, 0.8, power=1, transition_steps=60_000),
     )
 
