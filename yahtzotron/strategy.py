@@ -50,9 +50,23 @@ def get_expected_reward(initial_roll, cat_idx, ruleset):
 
 
 def assemble_roll_lut(ruleset):
+    """Assemble look up table of expected rewards for given ruleset.
+
+    This enumerates all possible outcomes of each decision.
+
+    Returns a dict
+
+    {
+        "full": Nested dict with expected reward for each roll, category, keep action.
+        "marginal-0": Dict with expected reward for each category, marginalized over all
+            rolls if all dice are kept.
+        "marginal-1": Dict with expected reward for each category, marginalized over all
+            rolls if the best keep action is chosen.
+    }
+    """
     num_dice = ruleset.num_dice
 
-    # all possible unique rolls with n 6-sided dice
+    # loop over all possible unique rolls with n 6-sided dice
     roll_combinations = itertools.combinations_with_replacement(range(1, 7), num_dice)
     total_elements = int(factorial(5 + num_dice) / factorial(num_dice) / factorial(5))
 
@@ -71,6 +85,7 @@ def assemble_roll_lut(ruleset):
                 initial_roll, cat_idx, ruleset
             )
 
+    # assemble marginal reward LUTs
     expected_marginal_reward_0step = {}
     expected_marginal_reward_1step = {}
 

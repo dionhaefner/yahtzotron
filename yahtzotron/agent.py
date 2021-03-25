@@ -20,6 +20,7 @@ DISK_CACHE = os.path.expanduser(os.path.join("~", ".yahtzotron"))
 
 @memoize
 def create_network(objective, num_dice, num_categories):
+    """Create the neural networks used by the agent."""
     from yahtzotron.training import MINIMUM_LOGIT
 
     input_shapes = [
@@ -107,6 +108,7 @@ def create_network(objective, num_dice, num_categories):
 
 @memoize
 def get_lut(path, ruleset):
+    """Load cached look-up table, or compute from scratch."""
     if not os.path.isfile(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         roll_lut = assemble_roll_lut(ruleset)
@@ -120,6 +122,7 @@ def get_lut(path, ruleset):
 
 
 def get_opponent_value(opponent_scorecards, network, weights):
+    """Compute the maximum value of all given opponents."""
     if not hasattr(opponent_scorecards, "__iter__"):
         opponent_scorecards = [opponent_scorecards]
 
@@ -143,6 +146,11 @@ def play_turn(
     use_lut=None,
     opponent_value=None,
 ):
+    """Play a turn.
+
+    This is a generator that yields a dict describing the current state
+    after each action.
+    """
     player_scorecard_arr = player_scorecard.to_array()
 
     if opponent_value is None and objective == "win":
@@ -214,6 +222,7 @@ def play_turn(
 def assemble_network_inputs(
     rolls_left, dice_count, player_scorecard, opponent_value=None
 ):
+    """Re-shape inputs to be used as network input."""
     inputs = [
         np.asarray([rolls_left]),
         dice_count,
@@ -233,6 +242,8 @@ def get_action(
     network,
     weights,
 ):
+    """Get an action according to current policy."""
+
     def choose_from_logits(logits):
         # pure NumPy version of jax.random.categorical
         logits = np.asarray(logits)
@@ -250,8 +261,11 @@ def get_action(
 
 
 def get_action_greedy(rolls_left, current_dice, player_scorecard, roll_lut):
-    # greedily pick action with highest expected reward advantage
-    # this is not optimal play but should be a good baseline
+    """Get an action according to look-up table.
+
+    This greedily picks the action with the highest expected reward advantage.
+    This is far from optimal play but should be a good baseline.
+    """
     num_dice = player_scorecard.ruleset_.num_dice
     num_categories = player_scorecard.ruleset_.num_categories
 
@@ -327,6 +341,10 @@ class Yahtzotron:
             )
 
     def explain(self, observation):
+        """Return the estimated probability for each final category action.
+
+        This only makes sense if rolls_left > 0.
+        """
         cat_logits = self._strategy_network(self._strategy_weights, observation)
         cat_prob = np.exp(cat_logits - cat_logits.max())
         cat_prob /= cat_prob.sum()
@@ -337,6 +355,13 @@ class Yahtzotron:
         player_scorecard,
         opponent_scorecards=None,
     ):
+        """Play a turn.
+
+        This is a generator that yields a dict describing the current state
+        after each action.
+
+        Opponent scorecards only have meaning if the objective is "win".
+        """
         if self._objective == "win":
             if opponent_scorecards is None or (
                 hasattr(opponent_scorecards, "__iter__")
@@ -366,12 +391,14 @@ class Yahtzotron:
         )
 
     def get_weights(self, strategy=False):
+        """Get current network weights."""
         if strategy:
             return self._strategy_weights
 
         return self._weights
 
     def set_weights(self, new_weights, strategy=False):
+        """Set current network weights."""
         new_weights = hk.data_structures.to_immutable_dict(new_weights)
         if strategy:
             self._strategy_weights = new_weights
@@ -379,6 +406,7 @@ class Yahtzotron:
             self._weights = new_weights
 
     def clone(self, keep_weights=True):
+        """Create a copy of the current agent."""
         yzt = self.__class__(ruleset=self._ruleset.name, objective=self._objective)
 
         if keep_weights:
@@ -387,6 +415,7 @@ class Yahtzotron:
         return yzt
 
     def save(self, path):
+        """Save agent to given pickle file."""
         os.makedirs(os.path.dirname(os.path.realpath(path)), exist_ok=True)
 
         statedict = dict(
@@ -400,6 +429,7 @@ class Yahtzotron:
             pickle.dump(statedict, f)
 
     def load(self, path):
+        """Load agent from given pickle file."""
         with open(path, "rb") as f:
             statedict = pickle.load(f)
 

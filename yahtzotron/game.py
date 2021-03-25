@@ -2,6 +2,8 @@ import numpy as np
 
 
 class Scorecard:
+    """Keep track of scores during the game."""
+
     def __init__(self, ruleset, scores=None):
         self.scores = np.zeros(ruleset.num_categories, dtype="int")
         self.filled = np.zeros(ruleset.num_categories, dtype="bool")
@@ -49,6 +51,12 @@ class Scorecard:
 
 
 def play_tournament(agents, deterministic_rolls=False, record_trajectories=False):
+    """Play a tournament between given agents.
+
+    Returns either final scores or final scores and all trajectories
+    (if record_trajectories=True). A trajectory is a sequence of
+    (observation, action, reward) tuples for each agent.
+    """
     if not hasattr(agents, "__iter__"):
         agents = [agents]
 
@@ -66,7 +74,7 @@ def play_tournament(agents, deterministic_rolls=False, record_trajectories=False
     if record_trajectories:
         trajectories = [[] for _ in range(num_players)]
 
-    for t in range(ruleset.num_rounds):
+    for _ in range(ruleset.num_rounds):
         if deterministic_rolls:
             player_rolls = np.tile(
                 np.random.randint(1, 7, size=(1, 3, num_dice)), (num_players, 1, 1)

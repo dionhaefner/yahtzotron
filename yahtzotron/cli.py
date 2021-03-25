@@ -56,6 +56,7 @@ def cli(ctx, loglevel):
 @click.option("--no-restore", is_flag=True)
 @click.option("--objective", type=click.Choice(["win", "avg_score"]), default="win")
 def train(out, ruleset, num_epochs, no_restore, objective):
+    """Train a new model through self-play."""
     from yahtzotron.agent import Yahtzotron
     from yahtzotron.training import train_a2c, train_strategy
 
@@ -75,14 +76,9 @@ def train(out, ruleset, num_epochs, no_restore, objective):
 
 @cli.command("play")
 @click.argument("MODEL_PATH")
-@click.option("--skip-intro", is_flag=True)
-def play(model_path, skip_intro):
+def play(model_path):
+    """Play a game against Yahtzotron."""
     from yahtzotron.interactive import play_interactive
-
-    if not skip_intro:
-        from yahtzotron.eyecandy import play_intro
-
-        play_intro()
 
     play_interactive(model_path)
 
@@ -95,6 +91,7 @@ def play(model_path, skip_intro):
 )
 @click.option("--deterministic-rolls", is_flag=True, default=False)
 def evaluate(agents, num_rounds, ruleset, deterministic_rolls):
+    """Evaluate performance of trained agents."""
     import tqdm
     import numpy as np
 
@@ -152,6 +149,14 @@ def evaluate(agents, num_rounds, ruleset, deterministic_rolls):
         )
         summary.append("")
         click.echo("\n".join(summary))
+
+
+@cli.command("origin")
+def origin():
+    """Show Yahtzotron's origin story."""
+    from yahtzotron.eyecandy import play_intro
+
+    play_intro()
 
 
 if __name__ == "__main__":

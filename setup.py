@@ -22,7 +22,7 @@ setup(
     python_requires=">=3.6",
     use_scm_version={"write_to": "yahtzotron/_version.py"},
     # dependencies
-    setup_requires=["setuptools_scm", "setuptools_scm_git_archive", "numpy"],
+    setup_requires=["setuptools_scm"],
     install_requires=[
         "click",
         "numpy",
@@ -39,6 +39,4 @@ setup(
         [console_scripts]
         yahtzotron=yahtzotron.cli:cli
     """,
-    # package data
-    zip_safe=False,
 )

@@ -5,6 +5,8 @@ from asciimatics.screen import Screen
 
 
 def play_intro():
+    """Play Yahtzotron's magnificent origin story."""
+
     class Flash(Effect):
         def __init__(
             self, screen, rate, offset=0, duration=2, bg=Screen.COLOUR_WHITE, **kwargs

@@ -19,18 +19,26 @@ MINIMUM_LOGIT = jnp.finfo(jnp.float32).min
 
 
 def entropy(logits):
+    """Compute entropy from given logits."""
     probs = jax.nn.softmax(logits)
     logprobs = jax.nn.log_softmax(logits)
     return -jnp.sum(probs * logprobs, axis=-1)
 
 
 def cross_entropy(logits, actions):
+    """Compute cross-entropy from given logits and labels."""
     logprob = jax.nn.log_softmax(logits)
     labels = jax.nn.one_hot(actions, logits.shape[-1])
     return -jnp.sum(labels * logprob, axis=1)
 
 
 def compile_loss_function(type_, network):
+    """Compile loss function to use during training.
+
+    type_ can be either "a2c" (using a policy loss for the actor)
+    or "supervised" (using cross-entropy).
+    """
+
     def loss(
         weights,
         observations,
@@ -87,6 +95,7 @@ def compile_sgd_step(loss_func, optimizer):
 
 
 def get_default_schedules(pretraining=False):
+    """Get schedules for learning rate, entropy, TDlambda."""
     if pretraining:
         return dict(
             learning_rate=optax.constant_schedule(5e-3),
@@ -96,7 +105,9 @@ def get_default_schedules(pretraining=False):
 
     return dict(
         learning_rate=optax.exponential_decay(1e-3, 60_000, decay_rate=0.2),
-        entropy=(lambda count: 1e-3 * 0.1 ** (count / 80_000) if count < 80_000 else -1e-2),
+        entropy=(
+            lambda count: 1e-3 * 0.1 ** (count / 80_000) if count < 80_000 else -1e-2
+        ),
         td_lambda=optax.polynomial_schedule(0.2, 0.8, power=1, transition_steps=60_000),
     )
 
@@ -229,6 +240,7 @@ def train_a2c(
 
 
 def train_strategy(agent, num_epochs, players_per_game=4, learning_rate=1e-3):
+    """Train strategy net through supervised learning on observed final actions."""
     optimizer = optax.adam(learning_rate=learning_rate)
     opt_state = optimizer.init(agent.get_weights(strategy=True))
 

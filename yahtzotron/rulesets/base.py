@@ -5,11 +5,11 @@ Category = namedtuple("category", ["name", "score", "counts_towards_bonus"])
 
 
 def make_category(*args, name=None, counts_towards_bonus=False):
+    """Decorator that creates a new category from a function."""
+
     def inner(func):
-        nonlocal name
-        if name is None:
-            name = func.__name__
-        return Category(name, func, counts_towards_bonus)
+        cat_name = name or func.__name__
+        return Category(cat_name, func, counts_towards_bonus)
 
     if args and callable(args[0]):
         return inner(args[0])
@@ -18,6 +18,11 @@ def make_category(*args, name=None, counts_towards_bonus=False):
 
 
 class Ruleset:
+    """Represents the rules of the game.
+
+    Used to convert rolls and categories to scores, and to compute total scores.
+    """
+
     def __init__(
         self,
         categories,
