@@ -1,12 +1,12 @@
 # Yahtzotron
 
-:robot: :game_die: :game_die: :game_die: :game_die: :game_die:
+> State your prime directive! - "... to ... roll ..." 🤖 🎲
 
-Yahtzotron is a bot for [Yahtzee](https://en.wikipedia.org/wiki/Yahtzee) and [Yatzy](https://en.wikipedia.org/wiki/Yatzy), trained via advantage actor-critic (A2C) through self-play. Yahtzotron is implemented through the JAX library ecosystem (JAX + Haiku + optax + rlax).
+Yahtzotron is a bot for [Yahtzee](https://en.wikipedia.org/wiki/Yahtzee) and [Yatzy](https://en.wikipedia.org/wiki/Yatzy), trained via advantage actor-critic (A2C) through self-play. Yahtzotron is implemented through the JAX library ecosystem ([JAX](https://github.com/google/jax) + [Haiku](https://github.com/deepmind/dm-haiku) + [optax](https://github.com/deepmind/optax) + [rlax](https://github.com/deepmind/rlax)).
 
 Yahtzee is a game of chance played with 5 dice and involves making strategic decisions based on the outcome of your rolls early in the game. This makes for a surprisingly challenging task for reinforcement learning.
 
-The pre-trained agents are close to perfect play (avg. scores are just 5-10 points below).
+The pre-trained agents are close to perfect play (average scores are around 240 for both Yahtzee and Yatzy, just 5-10 points below perfect play).
 
 ## Usage
 
