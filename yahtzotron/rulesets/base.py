@@ -1,19 +1,15 @@
 from collections import namedtuple
 
 
-Category = namedtuple('category', ['name', 'score', 'counts_towards_bonus'])
+Category = namedtuple("category", ["name", "score", "counts_towards_bonus"])
 
 
 def make_category(*args, name=None, counts_towards_bonus=False):
+    """Decorator that creates a new category from a function."""
+
     def inner(func):
-        nonlocal name
-        if name is None:
-            name = func.__name__
-        return Category(
-            name,
-            func,
-            counts_towards_bonus
-        )
+        cat_name = name or func.__name__
+        return Category(cat_name, func, counts_towards_bonus)
 
     if args and callable(args[0]):
         return inner(args[0])
@@ -22,8 +18,19 @@ def make_category(*args, name=None, counts_towards_bonus=False):
 
 
 class Ruleset:
-    def __init__(self, categories, num_dice=5, bonus_cutoff=63, bonus_score=50,
-                 ruleset_name='custom'):
+    """Represents the rules of the game.
+
+    Used to convert rolls and categories to scores, and to compute total scores.
+    """
+
+    def __init__(
+        self,
+        categories,
+        num_dice=5,
+        bonus_cutoff=63,
+        bonus_score=50,
+        ruleset_name="custom",
+    ):
         self.name = ruleset_name
         self.num_dice = num_dice
         self.num_rounds = len(categories)
@@ -33,10 +40,10 @@ class Ruleset:
         self.bonus_cutoff_ = bonus_cutoff
         self.bonus_score_ = bonus_score
 
-    def score(self, roll, cat_idx, filled_categories):
+    def score(self, roll, cat_idx, filled_categories, scores):
         if filled_categories[cat_idx]:
-            raise ValueError('Cannot score already filled category')
-        return self.categories[cat_idx].score(roll, filled_categories)
+            raise ValueError("Cannot score already filled category")
+        return self.categories[cat_idx].score(roll, filled_categories, scores)
 
     def total_score(self, scores):
         return scores.sum() + self.bonus_value(scores)
@@ -62,4 +69,4 @@ class Ruleset:
         return 0
 
     def __repr__(self):
-        return f'{self.__class__.__name__}(ruleset_name={self.name})'
+        return f"{self.__class__.__name__}(ruleset_name={self.name})"

@@ -1,3 +1,4 @@
 [flake8]
 exclude = __init__.py
 max-line-length = 100
+ignore = E731, W503, E203
