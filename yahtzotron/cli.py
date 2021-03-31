@@ -105,7 +105,15 @@ def evaluate(agents, num_rounds, ruleset, deterministic_rolls):
         if agent_id == "greedy":
             return Yahtzotron(ruleset, greedy=True)
 
-        return Yahtzotron(ruleset, load_path=agent_id)
+        agent = Yahtzotron(load_path=agent_id)
+        got_ruleset = agent._ruleset.name
+        if got_ruleset != ruleset:
+            raise ValueError(
+                f"Got unexpected ruleset for loaded agent {agent_id}: {got_ruleset}. "
+                f"Consider using --ruleset {got_ruleset} instead, or pick a different agent."
+            )
+
+        return agent
 
     scores_per_agent = [[] for _ in agents]
     rank_per_agent = [[] for _ in agents]
