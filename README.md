@@ -8,6 +8,8 @@ Yahtzee is a game of chance played with 5 dice and involves making strategic dec
 
 The pre-trained agents are close to perfect play (average scores are around 240 for both Yahtzee and Yatzy, just 5-10 points below perfect play).
 
+[Read my blog post about the making of Yahtzotron here.](https://dionhaefner.github.io/2021/01/yahtzotron-learning-to-play-yahtzee-with-advantage-actor-critic/)
+
 ## Usage
 
 Just clone the repository and run
