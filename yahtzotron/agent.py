@@ -399,7 +399,6 @@ class Yahtzotron:
 
     def set_weights(self, new_weights, strategy=False):
         """Set current network weights."""
-        new_weights = hk.data_structures.to_immutable_dict(new_weights)
         if strategy:
             self._strategy_weights = new_weights
         else:
