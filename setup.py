@@ -28,6 +28,7 @@ setup(
         "numpy",
         "loguru",
         "jax",
+        "flax",
         "dm-haiku",
         "rlax",
         "optax",
