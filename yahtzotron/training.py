@@ -291,7 +291,7 @@ def train_strategy(agent, num_epochs, players_per_game=4, learning_rate=1e-3):
                 None,
             )
 
-            loss = float(loss_fn(weights, observations, actions))
+            loss = float(loss_fn(weights, observations, actions).item())
 
             if len(running_loss) == running_loss.maxlen:
                 running_loss.popleft()
